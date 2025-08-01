@@ -10,6 +10,12 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import json
 
+# Configuration
+FTP_ROOT = "./ftp-files"
+
+# Ensure FTP directory exists
+os.makedirs(FTP_ROOT, exist_ok=True)
+
 class MonitoringFTPHandler(FTPHandler):
     active_connections = []
     active_transfers = []
@@ -112,8 +118,6 @@ class ReplayWebHandler(BaseHTTPRequestHandler):
         pass
     
     def do_GET(self):
-        upload_dir = "/tmp/ftp_uploads"
-        
         # Parse the URL
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
@@ -127,7 +131,7 @@ class ReplayWebHandler(BaseHTTPRequestHandler):
         elif path.endswith('.slp'):
             # Serve individual replay file
             filename = os.path.basename(path)
-            filepath = os.path.join(upload_dir, filename)
+            filepath = os.path.join(FTP_ROOT, filename)
             if os.path.exists(filepath):
                 self.serve_file(filepath)
             else:
@@ -137,8 +141,6 @@ class ReplayWebHandler(BaseHTTPRequestHandler):
     
     def serve_replay_list(self):
         """Serve the HTML page with replay list"""
-        upload_dir = "/tmp/ftp_uploads"
-        
         html = """<!doctype html>
 <html>
   <head>
@@ -243,8 +245,6 @@ setInterval(loadReplays, 5000);
     
     def serve_replay_api(self):
         """Serve JSON API with replay information"""
-        upload_dir = "/tmp/ftp_uploads"
-        
         replays = []
         active_files = set()
         
@@ -259,9 +259,9 @@ setInterval(loadReplays, 5000);
                     filename = os.path.basename(filename)
                     active_files.add(filename)
         
-        if os.path.exists(upload_dir):
-            for filename in os.listdir(upload_dir):
-                filepath = os.path.join(upload_dir, filename)
+        if os.path.exists(FTP_ROOT):
+            for filename in os.listdir(FTP_ROOT):
+                filepath = os.path.join(FTP_ROOT, filename)
                 if os.path.isfile(filepath) and filename.endswith('.slp'):
                     stat = os.stat(filepath)
                     size_mb = round(stat.st_size / (1024 * 1024), 2)
@@ -378,15 +378,14 @@ def get_simple_socket_info():
 
 def monitor_upload_directory():
     """Monitor the upload directory for file changes to detect active transfers"""
-    upload_dir = "/tmp/ftp_uploads"
     last_files = {}
     
     while True:
         try:
-            if os.path.exists(upload_dir):
+            if os.path.exists(FTP_ROOT):
                 current_files = {}
-                for filename in os.listdir(upload_dir):
-                    filepath = os.path.join(upload_dir, filename)
+                for filename in os.listdir(FTP_ROOT):
+                    filepath = os.path.join(FTP_ROOT, filename)
                     if os.path.isfile(filepath):
                         stat = os.stat(filepath)
                         current_files[filename] = {
@@ -431,16 +430,16 @@ def main():
     authorizer = DummyAuthorizer()
     
     # Add anonymous user with write permissions
-    authorizer.add_anonymous("/tmp/ftp_uploads", perm="elradfmwMT")
+    authorizer.add_anonymous(FTP_ROOT, perm="elradfmwMT")
     
     # You can also add a specific user for Nintendont
-    # authorizer.add_user("nintendont", "password", "/tmp/ftp_uploads", perm="elradfmwMT")
+    # authorizer.add_user("nintendont", "password", FTP_ROOT, perm="elradfmwMT")
     
     handler = MonitoringFTPHandler
     handler.authorizer = authorizer
     
     # Create upload directory
-    os.makedirs("/tmp/ftp_uploads", exist_ok=True)
+    os.makedirs(FTP_ROOT, exist_ok=True)
     
     # Start the upload directory monitor
     upload_monitor_thread = threading.Thread(target=monitor_upload_directory, daemon=True)
