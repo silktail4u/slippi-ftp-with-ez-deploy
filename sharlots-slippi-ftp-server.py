@@ -183,8 +183,8 @@ async function loadReplays() {
         listEl.innerHTML = data.replays.map(replay => {
             const isActive = replay.is_active_transfer;
             const playUrl = isActive 
-                ? `slippi://play?path=http://127.0.0.1:8080/${replay.filename}&mirror=1`
-                : `slippi://play?path=http://127.0.0.1:8080/${replay.filename}`;
+                ? `slippi-mirror://play?path=http://127.0.0.1:8080/${replay.filename}&mirror=1`
+                : `slippi-mirror://play?path=http://127.0.0.1:8080/${replay.filename}`;
             
             // Format file size
             let sizeStr;
