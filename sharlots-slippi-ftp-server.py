@@ -3,10 +3,53 @@ import time
 import threading
 import socket
 import psutil
+from flask import Flask, render_template, render_template_string, jsonify, send_from_directory
+from peppi_py import read_slippi
+import pyarrow as pa
+
+# Utility function to format timer string for game info
+def frame_to_game_timer(frame, starting_timer_seconds=None):
+    """
+    Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
+    timer_type: 'DECREASING', 'INCREASING', or other.
+    starting_timer_seconds: int or None
+    """
+    if starting_timer_seconds is None:
+        return "Unknown"
+    centiseconds = int(round((((60 - (frame % 60)) % 60) * 99) / 59))
+    total_seconds = starting_timer_seconds - frame / 60
+    if total_seconds < 0:
+        total_seconds = 0
+    return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
+
+# Utility function to format timer string for game info
+def frame_to_game_timer(frame, timer_type, starting_timer_seconds=None):
+    """
+    Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
+    timer_type: 'DECREASING', 'INCREASING', or other.
+    starting_timer_seconds: int or None
+    """
+    if timer_type == "DECREASING":
+        if starting_timer_seconds is None:
+            return "Unknown"
+        centiseconds = int(round((((60 - (frame % 60)) % 60) * 99) / 59))
+        total_seconds = starting_timer_seconds - frame / 60
+        if total_seconds < 0:
+            total_seconds = 0
+        return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
+    elif timer_type == "INCREASING":
+        centiseconds = int((frame % 60) * 99 // 59)
+        total_seconds = frame / 60
+        return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
+    else:
+        return "Infinite"
+
+# Flask app setup
+app = Flask(__name__)
+
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 import json
 
@@ -110,211 +153,98 @@ class MonitoringFTPHandler(FTPHandler):
             self.connection_info['current_file'] = f"Incomplete receive: {os.path.basename(file)}"
             self.connection_info['transfer_active'] = False
 
-class ReplayWebHandler(BaseHTTPRequestHandler):
-    """HTTP handler for serving replay files and web interface"""
-    
-    def log_message(self, format, *args):
-        # Suppress default HTTP logging to keep FTP logs clean
-        pass
-    
-    def do_GET(self):
-        # Parse the URL
-        parsed_path = urllib.parse.urlparse(self.path)
-        path = parsed_path.path
-        
-        if path == '/' or path == '/replays':
-            # Serve the main replay list page
-            self.serve_replay_list()
-        elif path.startswith('/api/replays'):
-            # Serve JSON API for replay list
-            self.serve_replay_api()
-        elif path.endswith('.slp'):
-            # Serve individual replay file
-            filename = os.path.basename(path)
-            filepath = os.path.join(FTP_ROOT, filename)
-            if os.path.exists(filepath):
-                self.serve_file(filepath)
-            else:
-                self.send_error(404, "Replay file not found")
-        else:
-            self.send_error(404, "Not found")
-    
-    def serve_replay_list(self):
-        """Serve the HTML page with replay list"""
-        html = """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width">
-    <title>Index of /</title>
-    <style type="text/css">i.icon { display: block; height: 16px; width: 16px; }
-table tr { white-space: nowrap; }
-td.perms {}
-td.file-size { text-align: right; padding-left: 1em; }
-td.display-name { padding-left: 1em; }
-i.icon-_blank {
-  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAWBJREFUeNqEUj1LxEAQnd1MVA4lyIEWx6UIKEGUExGsbC3tLfwJ/hT/g7VlCnubqxXBwg/Q4hQP/LhKL5nZuBsvuGfW5MGyuzM7jzdvVuR5DgYnZ+f99ai7Vt5t9K9unu4HLweI3qWYxI6PDosdy0fhcntxO44CcOBzPA7mfEyuHwf7ntQk4jcnywOxIlfxOCNYaLVgb6cXbkTdhJXq2SIlNMC0xIqhHczDbi8OVzpLSUa0WebRfmigLHqj1EcPZnwf7gbDIrYVRyEinurj6jTBHyI7pqVrFQqEbt6TEmZ9v1NRAJNC1xTYxIQh/MmRUlmFQE3qWOW1nqB2TWk1/3tgJV0waVvkFIEeZbHq4ElyKzAmEXOx6gnEVJuWBzmkRJBRPYGZBDsVaOlpSgVJE2yVaAe/0kx/3azBRO0VsbMFZE3CDSZKweZfYIVg+DZ6v7h9GDVOwZPw/PoxKu/fAgwALbDAXf7DdQkAAAAASUVORK5CYII=");
+CHARACTER_ID_MAP = {
+    0x00: 'captain_falcon',
+    0x01: 'donkey_kong',
+    0x02: 'fox',
+    0x03: 'game_and_watch',
+    0x04: 'kirby',
+    0x05: 'bowser',
+    0x06: 'link',
+    0x07: 'luigi',
+    0x08: 'mario',
+    0x09: 'marth',
+    0x0A: 'mewtwo',
+    0x0B: 'ness',
+    0x0C: 'peach',
+    0x0D: 'pikachu',
+    0x0E: 'ice_climbers',
+    0x0F: 'jigglypuff',
+    0x10: 'samus',
+    0x11: 'yoshi',
+    0x12: 'zelda',
+    0x13: 'sheik',
+    0x14: 'falco',
+    0x15: 'young_link',
+    0x16: 'dr_mario',
+    0x17: 'roy',
+    0x18: 'pichu',
+    0x19: 'ganondorf',
+    0x1A: 'master_hand',
+    0x1B: 'wireframe_male',
+    0x1C: 'wireframe_female',
+    0x1D: 'giga_bowser',
+    0x1E: 'crazy_hand',
+    0x1F: 'sandbag',
+    0x20: 'popo',
+    0x21: 'none'
+}
+STAGE_ID_MAP = {
+    0: 'Dummy',
+    1: 'TEST',
+    2: 'Fountain of Dreams',
+    3: 'Pokémon Stadium',
+    4: "Princess Peach's Castle",
+    5: 'Kongo Jungle',
+    6: 'Brinstar',
+    7: 'Corneria',
+    8: "Yoshi's Story",
+    9: 'Onett',
+    10: 'Mute City',
+    11: 'Rainbow Cruise',
+    12: 'Jungle Japes',
+    13: 'Great Bay',
+    14: 'Hyrule Temple',
+    15: 'Brinstar Depths',
+    16: "Yoshi's Island",
+    17: 'Green Greens',
+    18: 'Fourside',
+    19: 'Mushroom Kingdom I',
+    20: 'Mushroom Kingdom II',
+    22: 'Venom',
+    23: 'Poké Floats',
+    24: 'Big Blue',
+    25: 'Icicle Mountain',
+    26: 'Icetop',
+    27: 'Flat Zone',
+    28: 'Dream Land N64',
+    29: "Yoshi's Island N64",
+    30: 'Kongo Jungle N64',
+    31: 'Battlefield',
+    32: 'Final Destination',
 }
 
-i.icon-_page {
-  background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAmhJREFUeNpsUztv01AYPfdhOy/XTZ80VV1VoCqlA2zQqUgwMEErWBALv4GJDfEDmOEHsFTqVCTExAiiSI2QEKJKESVFFBWo04TESRzfy2c7LY/kLtf2d8+555zvM9NaI1ora5svby9OnbUEBxgDlIKiWjXQeLy19/X17sEtcPY2rtHS96/Hu0RvXXLz+cUzM87zShsI29DpHCYt4E6Box4IZzTnbDx7V74GjhOSfwgE0H2638K9h08A3iHGVbjTw7g6YmAyw/BgecHNGGJjvfQhIfmfIFDAXJpjuugi7djIFVI4P0plctgJQ0xnFe5eOO02OwEp2VkhSCnC8WOCdqgwnzFx4/IyppwRVN+XYXsecqZA1pB48ekAnw9/4GZx3L04N/GoTwEjX4cNH5vlPfjtAIYp8cWrQutxrC5Mod3VsXVTMFSqtaE+gl9dhaUxE2tXZiF7nYiiatJ3v5s8R/1yOCNLOuwjkELiTbmC9dJHpIaGASsDkoFQGJQwHWMcHWJYOmUj1OjvQotuytt5nHMLEGkCyx6QU384jwkUAd2sxJbS/QShZtg/8rHzzQOzSaFhxQrA6YgQMQHojCUlgnCAAvKFBoXXaHfArSCZDE0gyWJgFIKmvUFKO4MUNIk2a4+hODtDUVuJ/J732AKS6ZtImdTyAQQB3bZN8l9t75IFh0JMUdVKsohsUPqRgnka0tYgggYpCHkKGTsHI5NOMojB4iTICCepvX53AIEfQta1iUCmoTiBmdEri2RgddKFhuJoqb/af/yw/d3zTNM6UkaOfis62aUgddAbnz+rXuPY+Vnzjt9/CzAAbmLjCrfBiRgAAAAASUVORK5CYII=");
-}
-</style>
-  </head>
-  <body>
-<h1>Index of /</h1>
-<table id="fileList">
-</table>
-<br><address id="footer">Enhanced FTP Server running @ 127.0.0.1:9876</address>
+# NAT Configuration - Set your public IP address here
+# You can get your public IP from https://www.whatismyip.com/
+# MASQUERADE_ADDRESS = "118.67.199.230"  # Set this to your public IP address (e.g., "123.456.789.012")
 
-<script>
-async function loadReplays() {
-    try {
-        const response = await fetch('/api/replays');
-        const data = await response.json();
-        
-        const listEl = document.getElementById('fileList');
-        
-        if (data.replays.length === 0) {
-            listEl.innerHTML = '<tr><td colspan="5">No files found</td></tr>';
-            return;
-        }
-        
-        listEl.innerHTML = data.replays.map(replay => {
-            const isActive = replay.is_active_transfer;
-            const playUrl = isActive 
-                ? `slippi-mirror://play?path=http://127.0.0.1:8080/${replay.filename}&mirror=1`
-                : `slippi-mirror://play?path=http://127.0.0.1:8080/${replay.filename}`;
-            
-            // Format file size
-            let sizeStr;
-            if (replay.size_bytes < 1024) {
-                sizeStr = replay.size_bytes + 'B';
-            } else if (replay.size_bytes < 1024 * 1024) {
-                sizeStr = Math.round(replay.size_bytes / 1024 * 10) / 10 + 'k';
-            } else {
-                sizeStr = Math.round(replay.size_bytes / (1024 * 1024) * 10) / 10 + 'M';
-            }
-            
-            // Format date to match nginx style
-            const date = new Date(replay.modified_time);
-            const dateStr = date.toLocaleDateString('en-GB', {
-                day: '2-digit',
-                month: 'short', 
-                year: 'numeric'
-            }) + ' ' + date.toLocaleTimeString('en-GB', {
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-            });
-            
-            return `
-                <tr>
-                    <td><i class="icon icon-_page"></i></td>
-                    <td class="perms"><code>(-rw-r--r--)</code></td>
-                    <td class="last-modified">${dateStr}</td>
-                    <td class="file-size"><code>${sizeStr}</code></td>
-                    <td class="display-name">
-                        <a href="${playUrl}">${replay.filename}</a>
-                        ${isActive ? ' (uploading)' : ''}
-                    </td>
-                </tr>
-            `;
-        }).join('');
-        
-    } catch (error) {
-        console.error('Failed to load replays:', error);
-        document.getElementById('fileList').innerHTML = '<tr><td colspan="5">Error loading files</td></tr>';
-    }
-}
+# Passive port range for data connections
+# PASSIVE_PORTS = range(64739, 64840)  # Ports 64739-64839
 
-// Load replays initially
-loadReplays();
+def frame_to_game_timer(frame, starting_timer_seconds=None):
+    """
+    Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
+    timer_type: 'DECREASING', 'INCREASING', or other.
+    starting_timer_seconds: int or None
+    """
+    if starting_timer_seconds is None:
+        return "Unknown"
+    centiseconds = int(round((((60 - (frame % 60)) % 60) * 99) / 59))
+    total_seconds = starting_timer_seconds - frame / 60
+    if total_seconds < 0:
+        total_seconds = 0
+    return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
 
-// Auto-refresh every 5 seconds
-setInterval(loadReplays, 5000);
-</script>
-</body>
-</html>"""
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.send_header('Content-Length', str(len(html.encode('utf-8'))))
-        self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
-    
-    def serve_replay_api(self):
-        """Serve JSON API with replay information"""
-        replays = []
-        active_files = set()
-        
-        # Get list of files currently being transferred
-        for conn in MonitoringFTPHandler.active_connections:
-            if conn.get('transfer_active') and conn.get('current_file'):
-                # Extract filename from the transfer info
-                current_file = conn.get('current_file', '')
-                if 'Uploading:' in current_file:
-                    filename = current_file.replace('Uploading:', '').strip()
-                    # Remove path if present
-                    filename = os.path.basename(filename)
-                    active_files.add(filename)
-        
-        if os.path.exists(FTP_ROOT):
-            for filename in os.listdir(FTP_ROOT):
-                filepath = os.path.join(FTP_ROOT, filename)
-                if os.path.isfile(filepath) and filename.endswith('.slp'):
-                    stat = os.stat(filepath)
-                    size_mb = round(stat.st_size / (1024 * 1024), 2)
-                    modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-                    
-                    replays.append({
-                        'filename': filename,
-                        'size_bytes': stat.st_size,
-                        'size_mb': size_mb,
-                        'modified_time': modified_time,
-                        'is_active_transfer': filename in active_files
-                    })
-        
-        # Sort by modification time (newest first)
-        replays.sort(key=lambda x: x['filename'], reverse=True)
-        
-        response_data = {
-            'total_files': len(replays),
-            'active_transfers': len(active_files),
-            'replays': replays
-        }
-        
-        json_data = json.dumps(response_data, indent=2)
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Content-Length', str(len(json_data.encode('utf-8'))))
-        self.end_headers()
-        self.wfile.write(json_data.encode('utf-8'))
-    
-    def serve_file(self, filepath):
-        """Serve a replay file for download"""
-        try:
-            with open(filepath, 'rb') as f:
-                content = f.read()
-            
-            self.send_response(200)
-            self.send_header('Content-type', 'application/octet-stream')
-            self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
-            self.send_header('Content-Length', str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            
-        except Exception as e:
-            self.send_error(500, f"Error serving file: {str(e)}")
-
-def start_web_server():
-    """Start the HTTP server for the web interface"""
-    try:
-        server = HTTPServer(('0.0.0.0', 9876), ReplayWebHandler)
-        server.serve_forever()
-    except Exception as e:
-        pass
 
 def get_socket_info():
     """Get detailed socket information from the system"""
@@ -430,40 +360,136 @@ def main():
     authorizer = DummyAuthorizer()
     
     # Add anonymous user with write permissions
-    authorizer.add_anonymous(FTP_ROOT, perm="elradfmwMT")
+    authorizer.add_anonymous(FTP_ROOT, perm="elr")
     
     # You can also add a specific user for Nintendont
-    # authorizer.add_user("nintendont", "password", FTP_ROOT, perm="elradfmwMT")
+    authorizer.add_user("nintendont", "password", FTP_ROOT, perm="elradfmwMT")
     
     handler = MonitoringFTPHandler
     handler.authorizer = authorizer
-    
-    # Create upload directory
-    os.makedirs(FTP_ROOT, exist_ok=True)
-    
-    # Start the upload directory monitor
+    # if PASSIVE_PORTS:
+    #     handler.passive_ports = PASSIVE_PORTS
+    #     print(f"NAT Configuration: Passive ports set to {PASSIVE_PORTS.start}-{PASSIVE_PORTS.stop-1}")
+    # if MASQUERADE_ADDRESS:
+    #     handler.masquerade_address = MASQUERADE_ADDRESS
+    #     print(f"NAT Configuration: Masquerade address set to {MASQUERADE_ADDRESS}")
+    # else:
+    #     print("NAT Configuration: No masquerade address set - you may need to configure this for NAT/gateway setups")
     upload_monitor_thread = threading.Thread(target=monitor_upload_directory, daemon=True)
     upload_monitor_thread.start()
-    
-    # Start the connection monitor in a separate thread
     monitor_thread = threading.Thread(target=show_active_connections, daemon=True)
     monitor_thread.start()
-    
-    # Start the web server in a separate thread
-    web_server_thread = threading.Thread(target=start_web_server, daemon=True)
-    web_server_thread.start()
-    
-    # Start FTP server
-    server = FTPServer(("0.0.0.0", 21), handler)
-    
+    server = FTPServer(("0.0.0.0", 2121), handler)
     print("FTP Server starting...")
     print("Port 21 - FTP uploads")
     print("Port 9876 - Web interface")
-    
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down...")
 
 if __name__ == "__main__":
-    main()
+    # Start FTP server in a background thread
+    ftp_thread = threading.Thread(target=main, daemon=True)
+    ftp_thread.start()
+
+    # Flask web server
+    @app.route('/')
+    def index():
+        return render_template('index.html')
+
+    @app.route('/api/replays')
+    def api_replays():
+        replays = []
+        active_files = set()
+        # Get list of files currently being transferred
+        for conn in MonitoringFTPHandler.active_connections:
+            if conn.get('transfer_active') and conn.get('current_file'):
+                current_file = conn.get('current_file', '')
+                if 'Uploading:' in current_file:
+                    filename = current_file.replace('Uploading:', '').strip()
+                    filename = os.path.basename(filename)
+                    active_files.add(filename)
+        if os.path.exists(FTP_ROOT):
+            for filename in os.listdir(FTP_ROOT):
+                filepath = os.path.join(FTP_ROOT, filename)
+                if os.path.isfile(filepath) and filename.endswith('.slp'):
+                    stat = os.stat(filepath)
+                    size_mb = round(stat.st_size / (1024 * 1024), 2)
+                    modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
+                    stage_id = None
+                    stage_name = None
+                    players = []
+                    game_info = {}
+                    try:
+                        game = read_slippi(filepath, skip_frames=False)
+
+                        if hasattr(game, 'start') and hasattr(game.start, 'stage'):
+                            stage_id = int(game.start.stage)
+                        if stage_id is not None:
+                            stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}")
+                            if game.start.is_frozen_ps and stage_name == "Pokémon Stadium":
+                                stage_name = "Frozen Pokémon Stadium"
+                        if hasattr(game, 'start') and hasattr(game.start, 'players'):
+                            # Determine the lowest and highest port among the players
+                            player_ports = [player.port for player in game.start.players]
+                            min_port = min(player_ports)
+                            max_port = max(player_ports)
+                            for p in game.start.players:
+                                char_id = int(p.character)
+                                costume = int(p.costume)
+                                char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
+                                # Use ports[0] if this is the lowest port, else ports[1]
+                                if p.port == min_port:
+                                    port_key = 0
+                                else:
+                                    port_key = 1
+                                stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
+                                icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
+                                players.append({
+                                    'port': p.port,
+                                    'character_id': char_id,
+                                    'character': char_name,
+                                    'costume': costume,
+                                    'stock_count': stocks,
+                                    'icon': icon
+                                })
+                        # Calculate time remaining string
+                        timer_str = "Unknown"
+                        try:
+                            last_frame = game.frames.id[-1].as_py()
+                            starting_timer_seconds = game.start.timer
+                            if last_frame is not None:
+                                timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
+                        except Exception as e:
+                            timer_str = f"Error: {e}"
+                        game_info = {
+                            'stage_id': stage_id,
+                            'stage_name': stage_name,
+                            'players': players,
+                            'timer': timer_str,
+                            'console_name': game.metadata['consoleNick']
+                        }
+                    except Exception as e:
+                        game_info = {'error': str(e)}
+                    replays.append({
+                        'filename': filename,
+                        'size_bytes': stat.st_size,
+                        'size_mb': size_mb,
+                        'modified_time': modified_time,
+                        'is_active_transfer': filename in active_files,
+                        'game_info': game_info
+                    })
+        replays.sort(key=lambda x: x['filename'], reverse=True)
+        response_data = {
+            'total_files': len(replays),
+            'active_transfers': len(active_files),
+            'replays': replays
+        }
+        return jsonify(response_data)
+
+    @app.route('/icon/<path:filename>')
+    def serve_icon(filename):
+        return send_from_directory('icon', filename)
+
+    app.run(host='0.0.0.0', port=9876, debug=True)
