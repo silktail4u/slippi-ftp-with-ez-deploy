@@ -347,7 +347,10 @@ def show_active_connections():
         if MonitoringFTPHandler.active_connections:
             for conn in MonitoringFTPHandler.active_connections:
                 status = "active" if conn.get('transfer_active') else "idle"
-                current_file = conn.get('current_file', '').replace('Uploading: ', '').replace('Downloading: ', '') or 'connected'
+                current_file = conn.get('current_file')
+                if current_file is None:
+                    current_file = ''
+                current_file = current_file.replace('Uploading: ', '').replace('Downloading: ', '') or 'connected'
                 # Only log when status changes or files change
                 if not hasattr(conn, 'last_logged_status') or conn.get('last_logged_status') != (status, current_file):
                     print(f"[{time.strftime('%H:%M:%S')}] {conn['ip']} - {status} - {current_file}")
@@ -379,7 +382,7 @@ def main():
     upload_monitor_thread.start()
     monitor_thread = threading.Thread(target=show_active_connections, daemon=True)
     monitor_thread.start()
-    server = FTPServer(("0.0.0.0", 2121), handler)
+    server = FTPServer(("0.0.0.0", 21), handler)
     print("FTP Server starting...")
     print("Port 21 - FTP uploads")
     print("Port 9876 - Web interface")
@@ -402,10 +405,16 @@ if __name__ == "__main__":
     def api_replays():
         replays = []
         active_files = set()
+        # Simple in-memory cache: {filename: (mtime, game_info)}
+        if not hasattr(api_replays, "_gameinfo_cache"):
+            api_replays._gameinfo_cache = {}
+        gameinfo_cache = api_replays._gameinfo_cache
+
         # Get list of files currently being transferred
         for conn in MonitoringFTPHandler.active_connections:
             if conn.get('transfer_active') and conn.get('current_file'):
-                current_file = conn.get('current_file', '')
+                current_file = (conn.get('current_file') or '')
+                current_file = current_file.replace('Uploading: ', '').replace('Downloading: ', '') or 'connected'
                 if 'Uploading:' in current_file:
                     filename = current_file.replace('Uploading:', '').strip()
                     filename = os.path.basename(filename)
@@ -417,67 +426,77 @@ if __name__ == "__main__":
                     stat = os.stat(filepath)
                     size_mb = round(stat.st_size / (1024 * 1024), 2)
                     modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-                    stage_id = None
-                    stage_name = None
-                    players = []
-                    game_info = {}
-                    try:
-                        game = read_slippi(filepath, skip_frames=False)
-
-                        if hasattr(game, 'start') and hasattr(game.start, 'stage'):
-                            stage_id = int(game.start.stage)
-                        if stage_id is not None:
-                            stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}")
-                            if game.start.is_frozen_ps and stage_name == "Pokémon Stadium":
-                                stage_name = "Frozen Pokémon Stadium"
-                        if hasattr(game, 'start') and hasattr(game.start, 'players'):
-                            # Determine the lowest and highest port among the players
-                            player_ports = [player.port for player in game.start.players]
-                            min_port = min(player_ports)
-                            max_port = max(player_ports)
-                            for p in game.start.players:
-                                char_id = int(p.character)
-                                costume = int(p.costume)
-                                char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
-                                # Use ports[0] if this is the lowest port, else ports[1]
-                                if p.port == min_port:
-                                    port_key = 0
-                                else:
-                                    port_key = 1
-                                stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
-                                icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
-                                players.append({
-                                    'port': p.port,
-                                    'character_id': char_id,
-                                    'character': char_name,
-                                    'costume': costume,
-                                    'stock_count': stocks,
-                                    'icon': icon
-                                })
-                        # Calculate time remaining string
-                        timer_str = "Unknown"
+                    is_active = filename in active_files
+                    cache_key = filename
+                    cache_entry = gameinfo_cache.get(cache_key)
+                    # Only use cache if not actively transferring and mtime matches
+                    if (not is_active and cache_entry and cache_entry[0] == stat.st_mtime):
+                        game_info = cache_entry[1]
+                    else:
+                        stage_id = None
+                        stage_name = None
+                        players = []
+                        game_info = {}
                         try:
-                            last_frame = game.frames.id[-1].as_py()
-                            starting_timer_seconds = game.start.timer
-                            if last_frame is not None:
-                                timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
+                            game = read_slippi(filepath, skip_frames=False)
+
+                            if hasattr(game, 'start') and hasattr(game.start, 'stage'):
+                                stage_id = int(game.start.stage)
+                            if stage_id is not None:
+                                stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}")
+                                if game.start.is_frozen_ps and stage_name == "Pokémon Stadium":
+                                    stage_name = "Frozen Pokémon Stadium"
+                            if hasattr(game, 'start') and hasattr(game.start, 'players'):
+                                # Determine the lowest and highest port among the players
+                                player_ports = [player.port for player in game.start.players]
+                                min_port = min(player_ports)
+                                max_port = max(player_ports)
+                                for p in game.start.players:
+                                    char_id = int(p.character)
+                                    costume = int(p.costume)
+                                    char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
+                                    # Use ports[0] if this is the lowest port, else ports[1]
+                                    if p.port == min_port:
+                                        port_key = 0
+                                    else:
+                                        port_key = 1
+                                    stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
+                                    icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
+                                    players.append({
+                                        'port': p.port,
+                                        'character_id': char_id,
+                                        'character': char_name,
+                                        'costume': costume,
+                                        'stock_count': stocks,
+                                        'icon': icon
+                                    })
+                            # Calculate time remaining string
+                            timer_str = "Unknown"
+                            try:
+                                last_frame = game.frames.id[-1].as_py()
+                                starting_timer_seconds = game.start.timer
+                                if last_frame is not None:
+                                    timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
+                            except Exception as e:
+                                timer_str = f"Error: {e}"
+                            game_info = {
+                                'stage_id': stage_id,
+                                'stage_name': stage_name,
+                                'players': players,
+                                'timer': timer_str,
+                                'console_name': game.metadata['consoleNick']
+                            }
                         except Exception as e:
-                            timer_str = f"Error: {e}"
-                        game_info = {
-                            'stage_id': stage_id,
-                            'stage_name': stage_name,
-                            'players': players,
-                            'timer': timer_str,
-                            'console_name': game.metadata['consoleNick']
-                        }
-                    except Exception as e:
-                        game_info = {'error': str(e)}
+                            game_info = {'error': str(e)}
+                        # Only cache if not actively transferring
+                        if not is_active:
+                            gameinfo_cache[cache_key] = (stat.st_mtime, game_info)
                     replays.append({
                         'filename': filename,
                         'size_bytes': stat.st_size,
                         'size_mb': size_mb,
                         'modified_time': modified_time,
-                        'is_active_transfer': filename in active_files,
+                        'is_active_transfer': is_active,
                         'game_info': game_info
                     })
         replays.sort(key=lambda x: x['filename'], reverse=True)
