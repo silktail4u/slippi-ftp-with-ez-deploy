@@ -325,16 +325,14 @@ def monitor_upload_directory():
                 
                 # Check for files that are growing (active transfers)
                 for filename, info in current_files.items():
-                    if filename in last_files:
-                        if info['size'] > last_files[filename]['size']:
-                            # File is growing - active transfer
-                            growth = info['size'] - last_files[filename]['size']
-                            # Update connection info if we can find it
-                            for conn in MonitoringFTPHandler.active_connections:
-                                if conn.get('current_file') and filename in conn['current_file']:
-                                    conn['bytes_transferred'] = info['size']
-                                    conn['transfer_active'] = True
-                    
+                    is_growing = filename in last_files and info['size'] > last_files[filename]['size']
+                    is_open = filename in open_files
+                    if is_growing or is_open:
+                        # File is growing or open - active transfer
+                        for conn in MonitoringFTPHandler.active_connections:
+                            if conn.get('current_file') and filename in conn['current_file']:
+                                conn['bytes_transferred'] = info['size']
+                                conn['transfer_active'] = True
                 last_files = current_files.copy()
         except Exception as e:
             pass  # Ignore errors
@@ -359,6 +357,15 @@ def show_active_connections():
         time.sleep(5)  # Check less frequently
 
 def main():
+    # Check if port 21 is already in use
+    import socket as pysocket
+    sock = pysocket.socket(pysocket.AF_INET, pysocket.SOCK_STREAM)
+    try:
+        sock.bind(("0.0.0.0", 21))
+        sock.close()
+    except OSError:
+        print("[ERROR] Port 21 is already in use. FTP server will not start.")
+        return
     # Set up FTP server
     authorizer = DummyAuthorizer()
     
@@ -392,7 +399,12 @@ def main():
         print("\nShutting down...")
 
 if __name__ == "__main__":
-    # Start FTP server in a background thread
+    # Suppress Flask GET request logging
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.WARNING)
+
+    # Start FTP server in a background thread, but only call main() once
     ftp_thread = threading.Thread(target=main, daemon=True)
     ftp_thread.start()
 
@@ -404,21 +416,30 @@ if __name__ == "__main__":
     @app.route('/api/replays')
     def api_replays():
         replays = []
-        active_files = set()
+        active_filepaths = set()
         # Simple in-memory cache: {filename: (mtime, game_info)}
         if not hasattr(api_replays, "_gameinfo_cache"):
             api_replays._gameinfo_cache = {}
         gameinfo_cache = api_replays._gameinfo_cache
 
-        # Get list of files currently being transferred
+
         for conn in MonitoringFTPHandler.active_connections:
             if conn.get('transfer_active') and conn.get('current_file'):
-                current_file = (conn.get('current_file') or '')
-                current_file = current_file.replace('Uploading: ', '').replace('Downloading: ', '') or 'connected'
+                current_file = conn.get('current_file') or ''
                 if 'Uploading:' in current_file:
                     filename = current_file.replace('Uploading:', '').strip()
-                    filename = os.path.basename(filename)
-                    active_files.add(filename)
+                    active_filepaths.add(os.path.abspath(filename))
+                elif 'Downloading:' in current_file:
+                    filename = current_file.replace('Downloading:', '').strip()
+                    active_filepaths.add(os.path.abspath(filename))
+
+        # Also consider files open by this process as active (by absolute path)
+        try:
+            for f in psutil.Process(os.getpid()).open_files():
+                active_filepaths.add(os.path.abspath(f.path))
+        except Exception as e:
+            print(f"[DEBUG] Could not get open files: {e}")
+
         if os.path.exists(FTP_ROOT):
             for filename in os.listdir(FTP_ROOT):
                 filepath = os.path.join(FTP_ROOT, filename)
@@ -426,7 +447,7 @@ if __name__ == "__main__":
                     stat = os.stat(filepath)
                     size_mb = round(stat.st_size / (1024 * 1024), 2)
                     modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
-                    is_active = filename in active_files
+                    is_active = os.path.abspath(filepath) in active_filepaths
                     cache_key = filename
                     cache_entry = gameinfo_cache.get(cache_key)
                     # Only use cache if not actively transferring and mtime matches
@@ -502,7 +523,7 @@ if __name__ == "__main__":
         replays.sort(key=lambda x: x['filename'], reverse=True)
         response_data = {
             'total_files': len(replays),
-            'active_transfers': len(active_files),
+            'active_transfers': len([r for r in replays if r['is_active_transfer']]),
             'replays': replays
         }
         return jsonify(response_data)
@@ -511,4 +532,4 @@ if __name__ == "__main__":
     def serve_icon(filename):
         return send_from_directory('icon', filename)
 
-    app.run(host='0.0.0.0', port=9876, debug=True)
+    app.run(host='0.0.0.0', port=9876, debug=False, use_reloader=False)
