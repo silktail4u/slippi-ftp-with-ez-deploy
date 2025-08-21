@@ -4,7 +4,7 @@ import threading
 import socket
 import psutil
 from flask import Flask, render_template, render_template_string, jsonify, send_from_directory
-from peppi_py import read_slippi
+from peppi_py import read_slippi, live_slippi_frame_numbers, live_slippi_info
 import pyarrow as pa
 
 # Utility function to format timer string for game info
@@ -309,7 +309,8 @@ def get_simple_socket_info():
 def monitor_upload_directory():
     """Monitor the upload directory for file changes to detect active transfers"""
     last_files = {}
-    
+    import psutil
+    pid = os.getpid()
     while True:
         try:
             if os.path.exists(FTP_ROOT):
@@ -322,8 +323,12 @@ def monitor_upload_directory():
                             'size': stat.st_size,
                             'mtime': stat.st_mtime
                         }
-                
-                # Check for files that are growing (active transfers)
+                # Get open files for this process
+                try:
+                    open_files = set(os.path.basename(f.path) for f in psutil.Process(pid).open_files())
+                except Exception:
+                    open_files = set()
+                # Check for files that are growing or open (active transfers)
                 for filename, info in current_files.items():
                     is_growing = filename in last_files and info['size'] > last_files[filename]['size']
                     is_open = filename in open_files
@@ -459,54 +464,107 @@ if __name__ == "__main__":
                         players = []
                         game_info = {}
                         try:
-                            game = read_slippi(filepath, skip_frames=False)
-
-                            if hasattr(game, 'start') and hasattr(game.start, 'stage'):
-                                stage_id = int(game.start.stage)
-                            if stage_id is not None:
-                                stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}")
-                                if game.start.is_frozen_ps and stage_name == "Pokémon Stadium":
+                            if is_active:
+                                info = live_slippi_info(filepath)
+                                frames = list(live_slippi_frame_numbers(filepath))
+                                last_frame = frames[-1] if frames else None
+                                # Stage info
+                                stage_id = int(info['start']['stage']) if info.get('start') and 'stage' in info['start'] else None
+                                stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}") if stage_id is not None else None
+                                if info.get('start', {}).get('is_frozen_ps', False) and stage_name == "Pokémon Stadium":
                                     stage_name = "Frozen Pokémon Stadium"
-                            if hasattr(game, 'start') and hasattr(game.start, 'players'):
-                                # Determine the lowest and highest port among the players
-                                player_ports = [player.port for player in game.start.players]
-                                min_port = min(player_ports)
-                                max_port = max(player_ports)
-                                for p in game.start.players:
-                                    char_id = int(p.character)
-                                    costume = int(p.costume)
+                                # Player info
+                                players = []
+                                player_list = info.get('start', {}).get('players', [])
+                                player_ports = [p['port'] for p in player_list] if player_list else []
+                                min_port = min(player_ports) if player_ports else 0
+                                # Get stocks for each player at last_frame if available
+                                for idx, p in enumerate(player_list):
+                                    char_id = int(p['character'])
+                                    costume = int(p['costume'])
                                     char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
-                                    # Use ports[0] if this is the lowest port, else ports[1]
-                                    if p.port == min_port:
-                                        port_key = 0
-                                    else:
-                                        port_key = 1
-                                    stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
+                                    port_key = 0 if p['port'] == min_port else 1
+                                    stocks = None
+                                    # Use last_frame's port data if available
+                                    try:
+                                        if last_frame is not None and hasattr(last_frame, 'ports') and len(last_frame.ports) > port_key:
+                                            port_data = last_frame.ports[port_key]
+                                            if hasattr(port_data, 'leader') and 'post' in port_data.leader and 'stocks' in port_data.leader['post']:
+                                                stocks = port_data.leader['post']['stocks']
+                                    except Exception:
+                                        stocks = None
                                     icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
                                     players.append({
-                                        'port': p.port,
+                                        'port': p['port'],
                                         'character_id': char_id,
                                         'character': char_name,
                                         'costume': costume,
                                         'stock_count': stocks,
                                         'icon': icon
                                     })
-                            # Calculate time remaining string
-                            timer_str = "Unknown"
-                            try:
-                                last_frame = game.frames.id[-1].as_py()
-                                starting_timer_seconds = game.start.timer
-                                if last_frame is not None:
-                                    timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
-                            except Exception as e:
-                                timer_str = f"Error: {e}"
-                            game_info = {
-                                'stage_id': stage_id,
-                                'stage_name': stage_name,
-                                'players': players,
-                                'timer': timer_str,
-                                'console_name': game.metadata['consoleNick']
-                            }
+                                # Timer string
+                                starting_timer_seconds = info.get('start', {}).get('timer', None)
+                                timer_str = "Unknown"
+                                if last_frame is not None and hasattr(last_frame, 'id'):
+                                    timer_str = frame_to_game_timer(last_frame.id, starting_timer_seconds)
+                                # Console name
+                                console_name = info.get('metadata', {}).get('consoleNick')
+                                game_info = {
+                                    'stage_id': stage_id,
+                                    'stage_name': stage_name,
+                                    'players': players,
+                                    'timer': timer_str,
+                                    'console_name': console_name
+                                }
+                            else:
+                                game = read_slippi(filepath, skip_frames=False)
+
+                                if hasattr(game, 'start') and hasattr(game.start, 'stage'):
+                                    stage_id = int(game.start.stage)
+                                if stage_id is not None:
+                                    stage_name = STAGE_ID_MAP.get(stage_id, f"Stage {stage_id}")
+                                    if game.start.is_frozen_ps and stage_name == "Pokémon Stadium":
+                                        stage_name = "Frozen Pokémon Stadium"
+                                if hasattr(game, 'start') and hasattr(game.start, 'players'):
+                                    # Determine the lowest and highest port among the players
+                                    player_ports = [player.port for player in game.start.players]
+                                    min_port = min(player_ports)
+                                    max_port = max(player_ports)
+                                    for p in game.start.players:
+                                        char_id = int(p.character)
+                                        costume = int(p.costume)
+                                        char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
+                                        # Use ports[0] if this is the lowest port, else ports[1]
+                                        if p.port == min_port:
+                                            port_key = 0
+                                        else:
+                                            port_key = 1
+                                        stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
+                                        icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
+                                        players.append({
+                                            'port': p.port,
+                                            'character_id': char_id,
+                                            'character': char_name,
+                                            'costume': costume,
+                                            'stock_count': stocks,
+                                            'icon': icon
+                                        })
+                                # Calculate time remaining string
+                                timer_str = "Unknown"
+                                try:
+                                    last_frame = game.frames.id[-1].as_py()
+                                    starting_timer_seconds = game.start.timer
+                                    if last_frame is not None:
+                                        timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
+                                except Exception as e:
+                                    timer_str = f"Error: {e}"
+                                game_info = {
+                                    'stage_id': stage_id,
+                                    'stage_name': stage_name,
+                                    'players': players,
+                                    'timer': timer_str,
+                                    'console_name': game.metadata['consoleNick']
+                                }
                         except Exception as e:
                             game_info = {'error': str(e)}
                         # Only cache if not actively transferring
