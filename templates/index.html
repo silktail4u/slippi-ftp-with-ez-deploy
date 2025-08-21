@@ -77,6 +77,63 @@
     <br>
     <address id="footer">sharlots-slippi-ftp-server running @ 127.0.0.1:9876</address>
     <script>
+        // --- Timer ticking logic ---
+        let timerTickers = {};
+        function parseTimerString(timerStr) {
+            // Expects mm:ss.SS
+            if (!timerStr || timerStr === 'Unknown') return null;
+            const match = timerStr.match(/(\d+):(\d+)\.(\d+)/);
+            if (!match) return null;
+            return {
+                minutes: parseInt(match[1], 10),
+                seconds: parseInt(match[2], 10),
+                centiseconds: parseInt(match[3], 10)
+            };
+        }
+        function timerToCentiseconds(timer) {
+            return timer.minutes * 60 * 100 + timer.seconds * 100 + timer.centiseconds;
+        }
+        function centisecondsToTimer(cs) {
+            let totalSeconds = Math.floor(cs / 100);
+            let minutes = Math.floor(totalSeconds / 60);
+            let seconds = totalSeconds % 60;
+            let centiseconds = cs % 100;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+        }
+        function startTimerTicker(rowId, timerStr) {
+            if (!timerStr || timerStr === 'Unknown') return;
+            let timer = parseTimerString(timerStr);
+            if (!timer) return;
+            let cs = timerToCentiseconds(timer);
+            // If ticker exists, only reset if difference > 9 centiseconds
+            if (timerTickers[rowId]) {
+                const diff = Math.abs(timerTickers[rowId].cs - cs);
+                if (diff > 64) {
+                    timerTickers[rowId].cs = cs;
+                    timerTickers[rowId].reset = true;
+                }
+                timerTickers[rowId].stopped = false;
+                return;
+            }
+            let ticker = { cs, reset: false, stopped: false };
+            timerTickers[rowId] = ticker;
+            function tick() {
+                if (ticker.stopped) return;
+                if (ticker.reset) {
+                    ticker.reset = false;
+                    cs = ticker.cs;
+                }
+                if (cs > 0) {
+                    cs--;
+                    const el = document.querySelector(`#timer-${rowId}`);
+                    if (el) el.textContent = centisecondsToTimer(cs);
+                    ticker.cs = cs;
+                }
+                setTimeout(tick, 1000/60);
+            }
+            tick();
+        }
+
         async function loadReplays() {
             try {
                 const response = await fetch('/api/replays');
@@ -93,8 +150,13 @@
                     const dateB = new Date(b.modified_time);
                     return dateB - dateA;
                 });
-                listEl.innerHTML = sortedReplays.map(replay => {
+                listEl.innerHTML = sortedReplays.map((replay, idx) => {
                     const isActive = replay.is_active_transfer;
+                    // Stop timer if it exists and is no longer active
+                    if (!isActive && timerTickers[idx]) {
+                        timerTickers[idx].stopped = true;
+                        delete timerTickers[idx];
+                    }
                     const playUrl = isActive
                         ? `slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1`
                         : `slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}`;
@@ -163,7 +225,10 @@
                         };
                         let timerHtml = '';
                         if (replay.game_info.timer && replay.game_info.timer !== 'Unknown') {
-                            timerHtml = `<div><b><span class='timer-value'>${replay.game_info.timer}</span></b></div>`;
+                            timerHtml = `<div><b><span class='timer-value' id='timer-${idx}'>${replay.game_info.timer}</span></b></div>`;
+                            if (isActive) {
+                                setTimeout(() => startTimerTicker(idx, replay.game_info.timer), 0);
+                            }
                         }
                         let consoleHtml = '';
                         if (consoleName) {
