@@ -509,6 +509,12 @@ if __name__ == "__main__":
                                     timer_str = frame_to_game_timer(last_frame.id, starting_timer_seconds)
                                 # Console name
                                 console_name = info.get('metadata', {}).get('consoleNick')
+                                if not console_name:
+                                    # Try to extract from filename: Game_...<dot>console<dot>.slp
+                                    base = os.path.basename(filepath)
+                                    parts = base.rsplit('.', 2)
+                                    if len(parts) == 3 and parts[2] == 'slp' and parts[1]:
+                                        console_name = parts[1]
                                 game_info = {
                                     'stage_id': stage_id,
                                     'stage_name': stage_name,
