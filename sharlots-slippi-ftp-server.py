@@ -6,8 +6,11 @@ import psutil
 from flask import Flask, render_template, render_template_string, jsonify, send_from_directory
 from peppi_py import read_slippi, live_slippi_frame_numbers, live_slippi_info
 import pyarrow as pa
+import asyncio
+import websockets
+import traceback
+import queue
 
-# Utility function to format timer string for game info
 def frame_to_game_timer(frame, starting_timer_seconds=None):
     """
     Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
@@ -62,6 +65,8 @@ os.makedirs(FTP_ROOT, exist_ok=True)
 class MonitoringFTPHandler(FTPHandler):
     active_connections = []
     active_transfers = []
+    # Map of console_name -> {'thread': t, 'stop_event': e, 'queue': q}
+    console_streams = {}
     
     def on_connect(self):
         connection_info = {
@@ -116,6 +121,23 @@ class MonitoringFTPHandler(FTPHandler):
             self.connection_info['transfer_start_time'] = time.time()
             self.connection_info['transfer_active'] = True
             self.connection_info['bytes_transferred'] = 0
+            abs_path = os.path.abspath(filename)
+            if abs_path.endswith('.slp'):
+                base = os.path.basename(abs_path)
+                parts = base.rsplit('.', 2)
+                if len(parts) == 3 and parts[2] == 'slp' and parts[1]:
+                    console_name = parts[1]
+                else:
+                    console_name = 'unknown'
+                import queue
+                if console_name not in MonitoringFTPHandler.console_streams:
+                    print(f"[DEBUG] Starting streaming thread for console {console_name}", flush=True)
+                    stop_event = threading.Event()
+                    file_queue = queue.Queue()
+                    t = threading.Thread(target=self._stream_slp_to_websocket_per_console, args=(console_name, file_queue, stop_event), daemon=True)
+                    MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
+                    t.start()
+                MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
         return super().ftp_STOR(line)
     
     def ftp_RETR(self, line):
@@ -152,6 +174,75 @@ class MonitoringFTPHandler(FTPHandler):
         if hasattr(self, 'connection_info'):
             self.connection_info['current_file'] = f"Incomplete receive: {os.path.basename(file)}"
             self.connection_info['transfer_active'] = False
+
+    def _stream_slp_to_websocket_per_console(self, console_name, file_queue, stop_event):
+        ws_url = f"wss://slippi-tv.azurewebsites.net:443/stream/{console_name.upper()}"
+        print(f"[DEBUG] Streaming thread started for console {console_name}", flush=True)
+
+        def is_transfer_active(filepath):
+            abs_path = os.path.abspath(filepath)
+            for conn in MonitoringFTPHandler.active_connections:
+                current_file = conn.get('current_file')
+                if current_file and abs_path in current_file and conn.get('transfer_active'):
+                    return True
+            return False
+
+        async def persistent_stream_loop():
+            while not stop_event.is_set():
+                ws = None
+                try:
+                    print(f"[WS] Connecting to {ws_url} for console {console_name}", flush=True)
+                    ws = await websockets.connect(ws_url, max_size=None)
+                    print(f"[WS] Connected to {ws_url}", flush=True)
+                    while not stop_event.is_set():
+                        try:
+                            filepath = file_queue.get(timeout=1)
+                        except queue.Empty:
+                            continue
+                        print(f"[WS] Streaming file {filepath} on console {console_name}", flush=True)
+                        last_pos = 0
+                        # Wait for file to exist
+                        waited = 0
+                        while not os.path.exists(filepath) and not stop_event.is_set():
+                            if waited % 10 == 0:
+                                print(f"[DEBUG] Waiting for file to exist: {filepath}", flush=True)
+                            await asyncio.sleep(0.1)
+                            waited += 1
+                        if stop_event.is_set():
+                            break
+                        try:
+                            with open(filepath, 'rb') as f:
+                                while not stop_event.is_set():
+                                    f.seek(last_pos)
+                                    chunk = f.read(4096)
+                                    if chunk:
+                                        await ws.send(chunk)
+                                        print(f"[WS] Sent {len(chunk)} bytes at offset {last_pos} for {filepath}", flush=True)
+                                        last_pos += len(chunk)
+                                    else:
+                                        if not is_transfer_active(filepath):
+                                            print(f"[WS] Finished streaming file {filepath} (FTP transfer ended)", flush=True)
+                                            break
+                                        await asyncio.sleep(0.2)
+                        except FileNotFoundError:
+                            print(f"[WS] File not found: {filepath}", flush=True)
+                        except Exception as e:
+                            print(f"[WS] Error reading/sending file {filepath}: {e}", flush=True)
+                except websockets.ConnectionClosed as e:
+                    print(f"[WS] Connection closed: code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)}", flush=True)
+                except Exception as e:
+                    print(f"[WS] Error in persistent stream for {console_name}: {e}\n{traceback.format_exc()}", flush=True)
+                finally:
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                            print(f"[WS] WebSocket closed for console {console_name}", flush=True)
+                        except Exception as e:
+                            print(f"[WS] Error closing WebSocket for {console_name}: {e}", flush=True)
+                if not stop_event.is_set():
+                    await asyncio.sleep(2)
+
+        asyncio.run(persistent_stream_loop())
 
 CHARACTER_ID_MAP = {
     0x00: 'captain_falcon',
