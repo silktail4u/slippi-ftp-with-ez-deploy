@@ -89,6 +89,9 @@
             display: flex;
             flex-direction: column;
         }
+        img {
+            vertical-align: middle;
+        }
     </style>
 </head>
 
@@ -122,23 +125,23 @@
             let centiseconds = cs % 100;
             return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
         }
-        function startTimerTicker(rowId, timerStr) {
+        function startTimerTicker(timerKey, timerStr) {
             if (!timerStr || timerStr === 'Unknown') return;
             let timer = parseTimerString(timerStr);
             if (!timer) return;
             let cs = timerToCentiseconds(timer);
             // If ticker exists, only reset if difference > 9 centiseconds
-            if (timerTickers[rowId]) {
-                const diff = Math.abs(timerTickers[rowId].cs - cs);
+            if (timerTickers[timerKey]) {
+                const diff = Math.abs(timerTickers[timerKey].cs - cs);
                 if (diff > 64) {
-                    timerTickers[rowId].cs = cs;
-                    timerTickers[rowId].reset = true;
+                    timerTickers[timerKey].cs = cs;
+                    timerTickers[timerKey].reset = true;
                 }
-                timerTickers[rowId].stopped = false;
+                timerTickers[timerKey].stopped = false;
                 return;
             }
             let ticker = { cs, reset: false, stopped: false };
-            timerTickers[rowId] = ticker;
+            timerTickers[timerKey] = ticker;
             function tick() {
                 if (ticker.stopped) return;
                 if (ticker.reset) {
@@ -147,7 +150,7 @@
                 }
                 if (cs > 0) {
                     cs--;
-                    const el = document.querySelector(`#timer-${rowId}`);
+                    const el = document.querySelector(`#timer-${timerKey}`);
                     if (el) el.textContent = centisecondsToTimer(cs);
                     ticker.cs = cs;
                 }
@@ -160,10 +163,12 @@
             html += `<tbody><tr><td colspan='4' style='background:#eee;font-weight:bold;font-size:1.1em;width: 100%;'>Console: ${consoleName}</td></tr>`;
             for (const replay of replays) {
                 const isActive = replay.is_active_transfer;
+                // Use filename as unique timer key
+                const timerKey = replay.filename.replace(/[^a-zA-Z0-9_\-]/g, '_');
                 // Stop timer if it exists and is no longer active
-                if (!isActive && timerTickers[rowIdx]) {
-                    timerTickers[rowIdx].stopped = true;
-                    delete timerTickers[rowIdx];
+                if (!isActive && timerTickers[timerKey]) {
+                    timerTickers[timerKey].stopped = true;
+                    delete timerTickers[timerKey];
                 }
                 const playUrl = isActive
                     ? `slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1`
@@ -190,6 +195,11 @@
                 });
                 // Game info (stage, players)
                 let gameInfoHtml = '';
+                let spectatormodeLink = '';
+                let slippiLauncherForkLink = '';
+                let slippiLauncherLink = '';
+                let slippiTvLink = '';
+                let slippilabLink = '';
                 if (replay.game_info && !replay.game_info.error) {
                     const stage = replay.game_info.stage_name || '';
                     const players = replay.game_info.players || [];
@@ -232,11 +242,27 @@
                     };
                     let timerHtml = '';
                     if (replay.game_info.timer && replay.game_info.timer !== 'Unknown') {
-                        timerHtml = `<div><b><span class='timer-value' id='timer-${rowIdx}'>${replay.game_info.timer}</span></b></div>`;
+                        timerHtml = `<div><b><span class='timer-value' id='timer-${timerKey}'>${replay.game_info.timer}</span></b></div>`;
                         if (isActive) {
-                            setTimeout(() => startTimerTicker(rowIdx, replay.game_info.timer), 0);
+                            setTimeout(() => startTimerTicker(timerKey, replay.game_info.timer), 0);
                         }
                     }
+                    if (isActive) {
+                        slippiLauncherForkLink = `<div><a href="slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher (fork)</a></div>`;
+                    }
+                    if (isActive && replay.game_info.spectatormode_stream_id) {
+                        spectatormodeLink = `<div><a href="https://spectatormode.tv/?watch=${replay.game_info.spectatormode_stream_id}" target="_blank">Watch on spectatormode.tv</a></div>`;
+                    }
+                    if (isActive) {
+                        slippiTvLink = `<div><a href="slippi-tv://watch?code=${replay.game_info.console_name.toUpperCase()}" target="_blank">Watch with <img alt="SlippiTV" src="/assets/slippitv.png" width="18 height="18"> SlippiTV</a></div>`;
+                    }
+                    if (!isActive) {
+                        slippiLauncherLink = `<div><a href="slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher</a></div>`;
+                    }
+                    if (!isActive && replay.game_info.slippilab_link) {
+                        slippilabLink = `<div><a href="${replay.game_info.slippilab_link}" target="_blank">Watch on <img alt="Slippi Lab" src="/assets/slippilab.png" width="18" height="18"> Slippi Lab</a></div>`;
+                    }
+                    watchOptionsHtml = `${slippiLauncherForkLink}<br>${spectatormodeLink}<br>${slippiTvLink}<br>${slippiLauncherLink}<br>${slippilabLink}`;
                     let consoleHtml = '';
                     // Don't show console name in row, it's in the group header
                     gameInfoHtml = `<div><b>${stage}</b></div>` + timerHtml + '<div>' +
@@ -261,9 +287,11 @@
                                 <span class="last-modified">${dateStr}</span>
                                 <span class="file-size"><code>${sizeStr}</code></span>
                                 <span class="display-name">
-                                    <a href="${playUrl}">${replay.filename}</a>
-                                    ${isActive ? ' (uploading)' : ''}
+                                    ${isActive ? '<span style="color:#d00;font-size:1.2em;vertical-align:middle;">🔴</span> ' : ''}
+                                    <a href="https://sharlot.memes.nz/slp-files/${replay.filename}">${replay.filename}</a>
+                                    ${isActive ? ' <span style="color:#d00;font-weight:bold;">(live)</span>' : ''}
                                 </span>
+                                ${watchOptionsHtml}              
                             </div>
                         </td>
                         <td class="game-info">
@@ -324,7 +352,7 @@
             }
         }
         loadReplays();
-        //setInterval(loadReplays, 1000);
+        setInterval(loadReplays, 1000);
     </script>
 </body>
 

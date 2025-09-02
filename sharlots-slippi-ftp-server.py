@@ -31,6 +31,108 @@ os.makedirs(FTP_ROOT, exist_ok=True)
 WS_URL = "wss://spectatormode.tv/bridge_socket/websocket?stream_count=1"
 spectatormode_live_files = {}
 
+SLIPPILAB_UPLOADS_FILE = "slippilab_uploaded.json"
+slippilab_uploaded = {}  # {abs_path: slippilab_id}
+
+def load_slippilab_uploaded():
+    global slippilab_uploaded
+    if os.path.exists(SLIPPILAB_UPLOADS_FILE):
+        try:
+            with open(SLIPPILAB_UPLOADS_FILE, "r", encoding="utf-8") as f:
+                slippilab_uploaded = json.load(f)
+        except Exception as e:
+            print(f"[ERROR] Failed to load {SLIPPILAB_UPLOADS_FILE}: {e}", flush=True)
+            slippilab_uploaded = {}
+    else:
+        slippilab_uploaded = {}
+
+def save_slippilab_uploaded():
+    try:
+        with open(SLIPPILAB_UPLOADS_FILE, "w", encoding="utf-8") as f:
+            json.dump(slippilab_uploaded, f, indent=2)
+    except Exception as e:
+        print(f"[ERROR] Failed to save {SLIPPILAB_UPLOADS_FILE}: {e}", flush=True)
+    
+
+def fix_slp_header_length(file):
+    # fix SLP header length if this is a .slp file since it will always be 0 for reasons
+    import struct
+    try:
+        with open(file, "rb+") as f:
+            data = f.read()
+            header = b'U\x03raw[$U#l'
+            idx = data.find(header)
+            if idx == -1:
+                print(f"[ERROR] Could not find raw header in file: {file}", flush=True)
+                return False
+            length_offset = idx + len(header)
+            raw_data_start = length_offset + 4
+            next_key = b'U\x08metadata'
+            next_key_idx = data.find(next_key, raw_data_start)
+            if next_key_idx == -1:
+                print(f"[ERROR] Could not find metadata key in file: {file}", flush=True)
+                return False
+            raw_length = next_key_idx - raw_data_start
+            # Check if header length is 0
+            current_length = struct.unpack(">I", data[length_offset:length_offset+4])[0]
+            if current_length == 0:
+                f.seek(length_offset)
+                f.write(struct.pack(">I", raw_length))
+                print(f"[DEBUG] Fixed header length to {raw_length} bytes for {file}.", flush=True)
+                return True
+            else:
+                print(f"[DEBUG] Header length is already set to {current_length} bytes for {file}.", flush=True)
+                return True
+    except Exception as e:
+        print(f"[ERROR] Failed to fix SLP header length for {file}: {e}", flush=True)
+    return False
+
+def upload_to_slippilab(filepath):
+    # fix SLP header length before uploading
+    if filepath.lower().endswith('.slp'):
+        result = fix_slp_header_length(filepath)
+        if result != True:
+            print(f"[ERROR] Failed to fix SLP header length for {filepath}.", flush=True)
+            return
+
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+
+    with open(filepath, 'rb') as f:
+        data = f.read()
+        
+    try:
+        print(f"[SLIPPILAB] Uploading {filepath} ({len(data)} bytes)...", flush=True)
+        response = requests.post('https://slippilab.com/api/replay', headers=headers, data=data)
+        if response.ok:
+            result = response.json()
+            replay_id = result.get("id")
+            if replay_id:
+                print(f"[SLIPPILAB] Uploaded {filepath} as {replay_id}", flush=True)
+                return replay_id
+            else:
+                print(f"[SLIPPILAB] Upload succeeded but no ID returned: {result}", flush=True)
+        else:
+            print(f"[SLIPPILAB] Upload failed: {response.status_code} {response.text}", flush=True)
+    except Exception as e:
+        print(f"[SLIPPILAB] Exception uploading {filepath}: {e}", flush=True)
+    return None
+
+def batch_upload_missing_to_slippilab():
+    if not os.path.exists(FTP_ROOT):
+        return
+    for filename in os.listdir(FTP_ROOT):
+        if not filename.endswith('.slp'):
+            continue
+        filepath = os.path.abspath(os.path.join(FTP_ROOT, filename))
+        if filepath in slippilab_uploaded:
+            continue
+        replay_id = upload_to_slippilab(filepath)
+        if replay_id:
+            slippilab_uploaded[filepath] = replay_id
+            save_slippilab_uploaded()
+
 def find_raw_offset_and_length(slp_path):
     with open(slp_path, "rb") as f:
         header = f.read(65536)
@@ -304,7 +406,17 @@ class MonitoringFTPHandler(FTPHandler):
             self.connection_info['current_file'] = f"Received: {os.path.basename(file)} ({file_size} bytes)"
             self.connection_info['bytes_transferred'] = file_size
             self.connection_info['transfer_active'] = False
-            print(f"[{time.strftime('%H:%M:%S')}] File received: {os.path.basename(file)} ({file_size} bytes)")
+            print(f"[{time.strftime('%H:%M:%S')}] File received: {os.path.basename(file)} ({file_size} bytes)", flush=True)
+        # fix SLP header length if this is a .slp file since it will always be 0 for reasons
+        if file.lower().endswith('.slp'):
+            fix_slp_header_length(file)
+        # Upload to Slippi Lab if not already uploaded
+        abs_path = os.path.abspath(file)
+        if abs_path.endswith('.slp') and abs_path not in slippilab_uploaded:
+            replay_id = upload_to_slippilab(abs_path)
+            if replay_id:
+                slippilab_uploaded[abs_path] = replay_id
+                save_slippilab_uploaded()
     
     # New methods to detect transfer start
     def ftp_STOR(self, line):
@@ -696,6 +808,9 @@ if __name__ == "__main__":
     # Start FTP server in a background thread, but only call main() once
     ftp_thread = threading.Thread(target=main, daemon=True)
     ftp_thread.start()
+        
+    load_slippilab_uploaded()
+    batch_upload_missing_to_slippilab()
 
     # Flask web server
     @app.route('/')
@@ -865,6 +980,12 @@ if __name__ == "__main__":
                         # Only cache if not actively transferring
                         if not is_active:
                             gameinfo_cache[cache_key] = (stat.st_mtime, game_info)
+                    # --- Add Slippi Lab ID if available ---
+                    abs_fp = os.path.abspath(filepath)
+                    slippilab_id = slippilab_uploaded.get(abs_fp)
+                    if slippilab_id:
+                        game_info['slippilab_id'] = slippilab_id
+                        game_info['slippilab_link'] = f"https://www.slippilab.com/{slippilab_id}"
                     replays.append({
                         'filename': filename,
                         'size_bytes': stat.st_size,
@@ -884,5 +1005,8 @@ if __name__ == "__main__":
     @app.route('/icon/<path:filename>')
     def serve_icon(filename):
         return send_from_directory('icon', filename)
+    @app.route('/assets/<path:filename>')
+    def serve_assets(filename):
+        return send_from_directory('assets', filename)
 
     app.run(host='0.0.0.0', port=9876, debug=False, use_reloader=False)
