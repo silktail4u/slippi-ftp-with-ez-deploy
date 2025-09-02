@@ -10,6 +10,210 @@ import asyncio
 import websockets
 import traceback
 import queue
+import sys
+from pathlib import Path
+import glob
+import json
+from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.servers import FTPServer
+import urllib.parse
+import json
+
+app = Flask(__name__)
+
+# Configuration
+FTP_ROOT = "/web/sharlot/public_html/slp-files"
+
+# Ensure FTP directory exists
+os.makedirs(FTP_ROOT, exist_ok=True)
+
+WS_URL = "wss://spectatormode.tv/bridge_socket/websocket?stream_count=1"
+spectatormode_live_files = {}
+
+def find_raw_offset_and_length(slp_path):
+    with open(slp_path, "rb") as f:
+        header = f.read(65536)
+        idx = header.find(b'raw')
+        if idx == -1:
+            print(f"[DEBUG] Could not find 'raw' key in SLP file: {slp_path}")
+            print(f"[DEBUG] First 128 bytes: {header[:128].hex()}")
+            print(f"[DEBUG] File size: {os.path.getsize(slp_path)} bytes")
+            raise Exception("Could not find 'raw' key in SLP file")
+        arr_start = header.find(b'[$U#l', idx)
+        if arr_start == -1:
+            print(f"[DEBUG] Could not find UBJSON array header for 'raw' in SLP file: {slp_path}")
+            print(f"[DEBUG] Context around 'raw' key: {header[max(0,idx-16):idx+32].hex()}")
+            raise Exception("Could not find UBJSON array header for 'raw'")
+        length_offset = arr_start + 5
+        raw_len = int.from_bytes(header[length_offset:length_offset+4], 'big')
+        raw_data_offset = length_offset + 4
+        return raw_data_offset, raw_len
+
+def slp_packet_iterator(f, raw_offset, raw_len):
+    pos = raw_offset
+    f.seek(0, os.SEEK_END)
+    file_end = f.tell()
+    while pos + 2 > file_end:
+        time.sleep(0.05)
+        f.seek(0, os.SEEK_END)
+        file_end = f.tell()
+    f.seek(pos)
+    first_cmd = f.read(1)
+    if not first_cmd:
+        raise Exception("Failed to read first event at raw_offset")
+    if first_cmd[0] != 0x35:
+        raise Exception(f"First event at raw_offset is not 0x35 (Event Payloads), got: {first_cmd.hex()}")
+    payload_size_byte = f.read(1)
+    payload_size = payload_size_byte[0]
+    payload_bytes = b''
+    while len(payload_bytes) < payload_size - 1:
+        chunk = f.read(payload_size - 1 - len(payload_bytes))
+        if not chunk:
+            time.sleep(0.05)
+            continue
+        payload_bytes += chunk
+    mapping = {}
+    i = 0
+    while i + 3 <= len(payload_bytes):
+        cmd = payload_bytes[i]
+        size = int.from_bytes(payload_bytes[i+1:i+3], 'big')
+        mapping[cmd] = size
+        i += 3
+    event_payloads_packet = first_cmd + payload_size_byte + payload_bytes
+    scan_pos = pos + 1 + 1 + (payload_size - 1)
+    f.seek(0, os.SEEK_END)
+    file_end = f.tell()
+    last_complete_pos = scan_pos
+    last_gamestart_offset = None
+    last_gamestart_packet = None
+    while scan_pos + 1 <= file_end:
+        f.seek(scan_pos)
+        cmd_byte = f.read(1)
+        if not cmd_byte or len(cmd_byte) < 1:
+            break
+        cmd = cmd_byte[0]
+        payload_len = mapping.get(cmd)
+        if payload_len is None:
+            scan_pos += 1
+            continue
+        if scan_pos + 1 + payload_len > file_end:
+            break
+        payload = f.read(payload_len)
+        if cmd == 0x36:
+            last_gamestart_offset = scan_pos
+            last_gamestart_packet = cmd_byte + payload
+        scan_pos += 1 + payload_len
+        last_complete_pos = scan_pos
+    yield pos, event_payloads_packet
+    if last_gamestart_packet is not None:
+        yield last_gamestart_offset, last_gamestart_packet
+    pos = last_complete_pos
+    first_event = True
+    while True:
+        f.seek(0, os.SEEK_END)
+        file_end = f.tell()
+        if pos + 1 > file_end:
+            time.sleep(0.05)
+            continue
+        f.seek(pos)
+        cmd_byte = f.read(1)
+        if not cmd_byte or len(cmd_byte) < 1:
+            time.sleep(0.05)
+            continue
+        cmd = cmd_byte[0]
+        payload_len = mapping.get(cmd)
+        if payload_len is None:
+            pos += 1
+            continue
+        if pos + 1 + payload_len > file_end:
+            time.sleep(0.05)
+            continue
+        payload = f.read(payload_len)
+        if len(payload) < payload_len:
+            time.sleep(0.05)
+            continue
+        packet = cmd_byte + payload
+        if first_event:
+            first_event = False
+        yield pos, packet
+        pos += 1 + payload_len
+
+async def tail_and_forward_spectatormode(slp_path, ws_url, live_dict):
+    import struct
+    raw_offset, _ = find_raw_offset_and_length(slp_path)
+    with open(slp_path, "rb") as f:
+        sent_packets = 0
+        try:
+            async with websockets.connect(ws_url, max_size=None) as ws:
+                greeting = await ws.recv()
+                try:
+                    msg = json.loads(greeting)
+                    stream_ids = msg.get("stream_ids")
+                    if not stream_ids or not isinstance(stream_ids, list) or not stream_ids:
+                        print("[ERROR] No stream_ids in server greeting. Full message:")
+                        print(greeting)
+                        live_dict['error'] = 'No stream_ids in server greeting.'
+                        return
+                    stream_id = stream_ids[0]
+                    print(f"[DEBUG] Using stream_id: {stream_id}")
+                    live_dict['stream_id'] = stream_id
+                    live_dict['active'] = True
+                except Exception as e:
+                    print(f"[ERROR] Failed to parse server greeting: {greeting}")
+                    live_dict['error'] = f'Failed to parse server greeting: {greeting} ({e})'
+                    return
+                BATCH_SIZE = 326 # seems to be the size of official client packets
+                buffer = bytearray()
+                packet_iter = slp_packet_iterator(f, raw_offset, None)
+                try:
+                    pos_35, packet_35 = next(packet_iter)
+                    header = struct.pack('<II', stream_id, len(packet_35))
+                    print(f"[DEBUG] Sending EventPayloads (0x35) immediately: {len(packet_35)} bytes with header")
+                    await ws.send(header + packet_35)
+                except StopIteration:
+                    print("[ERROR] No 0x35 packet found in SLP file!")
+                    return
+                # send most recent 0x36 (GameStart) if present
+                try:
+                    pos_36, packet_36 = next(packet_iter)
+                    if packet_36 and packet_36[0] == 0x36:
+                        header = struct.pack('<II', stream_id, len(packet_36))
+                        print(f"[DEBUG] Sending GameStart (0x36) immediately: {len(packet_36)} bytes with header")
+                        await ws.send(header + packet_36)
+                    else:
+                        buffer.extend(packet_36)
+                except StopIteration:
+                    pass
+                # batch the rest
+                for _, packet in packet_iter:
+                    header = struct.pack('<II', stream_id, len(packet))
+                    if packet and packet[0] == 0x39:
+                        if buffer:
+                            print(f"[DEBUG] Sending batch to spectatormode.tv: {len(buffer)} bytes (final flush)")
+                            await ws.send(header[:8] + bytes(buffer))
+                            buffer.clear()
+                        print(f"[DEBUG] Sending final packet to spectatormode.tv: {len(packet)} bytes (0x39) with header")
+                        await ws.send(header + packet)
+                        break
+                    buffer.extend(packet)
+                    sent_now = False
+                    while len(buffer) >= BATCH_SIZE:
+                        print(f"[DEBUG] Sending batch to spectatormode.tv: {BATCH_SIZE} bytes with header")
+                        await ws.send(struct.pack('<II', stream_id, BATCH_SIZE) + buffer[:BATCH_SIZE])
+                        buffer = buffer[BATCH_SIZE:]
+                        sent_now = True
+                    if not sent_now:
+                        print(f"[DEBUG] Buffering packet ({len(packet)} bytes), buffer size now {len(buffer)} bytes")
+                    sent_packets += 1
+                if buffer:
+                    print(f"[DEBUG] Sending batch to spectatormode.tv: {len(buffer)} bytes (final flush) with header")
+                    await ws.send(struct.pack('<II', stream_id, len(buffer)) + bytes(buffer))
+        except Exception as e:
+            live_dict['error'] = str(e)
+        finally:
+            live_dict['active'] = False
+            live_dict.pop('stream_id', None)
 
 def frame_to_game_timer(frame, starting_timer_seconds=None):
     """
@@ -25,44 +229,33 @@ def frame_to_game_timer(frame, starting_timer_seconds=None):
         total_seconds = 0
     return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
 
-# Utility function to format timer string for game info
-def frame_to_game_timer(frame, timer_type, starting_timer_seconds=None):
-    """
-    Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
-    timer_type: 'DECREASING', 'INCREASING', or other.
-    starting_timer_seconds: int or None
-    """
-    if timer_type == "DECREASING":
-        if starting_timer_seconds is None:
-            return "Unknown"
-        centiseconds = int(round((((60 - (frame % 60)) % 60) * 99) / 59))
-        total_seconds = starting_timer_seconds - frame / 60
-        if total_seconds < 0:
-            total_seconds = 0
-        return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
-    elif timer_type == "INCREASING":
-        centiseconds = int((frame % 60) * 99 // 59)
-        total_seconds = frame / 60
-        return f"{int(total_seconds // 60):02}:{int(total_seconds % 60):02}.{centiseconds:02}"
-    else:
-        return "Infinite"
-
-# Flask app setup
-app = Flask(__name__)
-
-from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
-from pyftpdlib.servers import FTPServer
-import urllib.parse
-import json
-
-# Configuration
-FTP_ROOT = "./ftp-files"
-
-# Ensure FTP directory exists
-os.makedirs(FTP_ROOT, exist_ok=True)
 
 class MonitoringFTPHandler(FTPHandler):
+    def _start_spectatormode_stream(self, abs_path):
+        if not abs_path.endswith('.slp'):
+            return
+        if abs_path in spectatormode_live_files:
+            return
+        spectatormode_live_files[abs_path] = {'active': True}
+        def _run(path=abs_path, live_dict=spectatormode_live_files[abs_path]):
+            # Wait for file to exist and have nonzero size before starting streaming
+            waited = 0
+            while (not os.path.exists(path) or os.path.getsize(path) == 0) and waited < 60:
+                if not os.path.exists(path):
+                    time.sleep(0.1)
+                    waited += 0.1
+                    continue
+                # File exists but is empty, wait for data
+                time.sleep(0.1)
+                waited += 0.1
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                live_dict['active'] = False
+                live_dict['error'] = 'File did not appear or remained empty for streaming.'
+                return
+            asyncio.run(tail_and_forward_spectatormode(path, WS_URL, live_dict))
+        t = threading.Thread(target=_run, daemon=True)
+        spectatormode_live_files[abs_path]['task'] = t
+        t.start()
     active_connections = []
     active_transfers = []
     # Map of console_name -> {'thread': t, 'stop_event': e, 'queue': q}
@@ -122,22 +315,22 @@ class MonitoringFTPHandler(FTPHandler):
             self.connection_info['transfer_active'] = True
             self.connection_info['bytes_transferred'] = 0
             abs_path = os.path.abspath(filename)
-            if abs_path.endswith('.slp'):
-                base = os.path.basename(abs_path)
-                parts = base.rsplit('.', 2)
-                if len(parts) == 3 and parts[2] == 'slp' and parts[1]:
-                    console_name = parts[1]
-                else:
-                    console_name = 'unknown'
-                import queue
-                if console_name not in MonitoringFTPHandler.console_streams:
-                    print(f"[DEBUG] Starting streaming thread for console {console_name}", flush=True)
-                    stop_event = threading.Event()
-                    file_queue = queue.Queue()
-                    t = threading.Thread(target=self._stream_slp_to_websocket_per_console, args=(console_name, file_queue, stop_event), daemon=True)
-                    MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
-                    t.start()
-                MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
+            self._start_spectatormode_stream(abs_path)
+            base = os.path.basename(abs_path)
+            parts = base.rsplit('.', 2)
+            if len(parts) == 3 and parts[2] == 'slp' and parts[1]:
+                console_name = parts[1]
+            else:
+                console_name = 'unknown'
+            import queue
+            if console_name not in MonitoringFTPHandler.console_streams:
+                print(f"[DEBUG] Starting streaming thread for console {console_name}", flush=True)
+                stop_event = threading.Event()
+                file_queue = queue.Queue()
+                t = threading.Thread(target=self._stream_slp_to_websocket_per_console, args=(console_name, file_queue, stop_event), daemon=True)
+                MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
+                t.start()
+            MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
         return super().ftp_STOR(line)
     
     def ftp_RETR(self, line):
@@ -613,6 +806,11 @@ if __name__ == "__main__":
                                     'timer': timer_str,
                                     'console_name': console_name
                                 }
+                                abs_fp = os.path.abspath(filepath)
+                                if abs_fp in spectatormode_live_files:
+                                    stream_id = spectatormode_live_files[abs_fp].get('stream_id')
+                                    if stream_id:
+                                        game_info['spectatormode_stream_id'] = stream_id
                             else:
                                 game = read_slippi(filepath, skip_frames=False)
 
