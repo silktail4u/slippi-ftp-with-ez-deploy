@@ -19,7 +19,6 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 import urllib.parse
-import json
 
 app = Flask(__name__)
 
@@ -242,82 +241,6 @@ def slp_packet_iterator(f, raw_offset, raw_len):
         yield pos, packet
         pos += 1 + payload_len
 
-async def tail_and_forward_spectatormode(slp_path, ws_url, live_dict):
-    import struct
-    raw_offset, _ = find_raw_offset_and_length(slp_path)
-    with open(slp_path, "rb") as f:
-        sent_packets = 0
-        try:
-            async with websockets.connect(ws_url, max_size=None) as ws:
-                greeting = await ws.recv()
-                try:
-                    msg = json.loads(greeting)
-                    stream_ids = msg.get("stream_ids")
-                    if not stream_ids or not isinstance(stream_ids, list) or not stream_ids:
-                        print("[ERROR] No stream_ids in server greeting. Full message:")
-                        print(greeting)
-                        live_dict['error'] = 'No stream_ids in server greeting.'
-                        return
-                    stream_id = stream_ids[0]
-                    print(f"[DEBUG] Using stream_id: {stream_id}")
-                    live_dict['stream_id'] = stream_id
-                    live_dict['active'] = True
-                except Exception as e:
-                    print(f"[ERROR] Failed to parse server greeting: {greeting}")
-                    live_dict['error'] = f'Failed to parse server greeting: {greeting} ({e})'
-                    return
-                BATCH_SIZE = 326 # seems to be the size of official client packets
-                buffer = bytearray()
-                packet_iter = slp_packet_iterator(f, raw_offset, None)
-                try:
-                    pos_35, packet_35 = next(packet_iter)
-                    header = struct.pack('<II', stream_id, len(packet_35))
-                    print(f"[DEBUG] Sending EventPayloads (0x35) immediately: {len(packet_35)} bytes with header")
-                    await ws.send(header + packet_35)
-                except StopIteration:
-                    print("[ERROR] No 0x35 packet found in SLP file!")
-                    return
-                # send most recent 0x36 (GameStart) if present
-                try:
-                    pos_36, packet_36 = next(packet_iter)
-                    if packet_36 and packet_36[0] == 0x36:
-                        header = struct.pack('<II', stream_id, len(packet_36))
-                        print(f"[DEBUG] Sending GameStart (0x36) immediately: {len(packet_36)} bytes with header")
-                        await ws.send(header + packet_36)
-                    else:
-                        buffer.extend(packet_36)
-                except StopIteration:
-                    pass
-                # batch the rest
-                for _, packet in packet_iter:
-                    header = struct.pack('<II', stream_id, len(packet))
-                    if packet and packet[0] == 0x39:
-                        if buffer:
-                            print(f"[DEBUG] Sending batch to spectatormode.tv: {len(buffer)} bytes (final flush)")
-                            await ws.send(header[:8] + bytes(buffer))
-                            buffer.clear()
-                        print(f"[DEBUG] Sending final packet to spectatormode.tv: {len(packet)} bytes (0x39) with header")
-                        await ws.send(header + packet)
-                        break
-                    buffer.extend(packet)
-                    sent_now = False
-                    while len(buffer) >= BATCH_SIZE:
-                        print(f"[DEBUG] Sending batch to spectatormode.tv: {BATCH_SIZE} bytes with header")
-                        await ws.send(struct.pack('<II', stream_id, BATCH_SIZE) + buffer[:BATCH_SIZE])
-                        buffer = buffer[BATCH_SIZE:]
-                        sent_now = True
-                    if not sent_now:
-                        print(f"[DEBUG] Buffering packet ({len(packet)} bytes), buffer size now {len(buffer)} bytes")
-                    sent_packets += 1
-                if buffer:
-                    print(f"[DEBUG] Sending batch to spectatormode.tv: {len(buffer)} bytes (final flush) with header")
-                    await ws.send(struct.pack('<II', stream_id, len(buffer)) + bytes(buffer))
-        except Exception as e:
-            live_dict['error'] = str(e)
-        finally:
-            live_dict['active'] = False
-            live_dict.pop('stream_id', None)
-
 def frame_to_game_timer(frame, starting_timer_seconds=None):
     """
     Returns a string like 'mm:ss.SS' for the timer, or 'Unknown'/'Infinite'.
@@ -337,28 +260,95 @@ class MonitoringFTPHandler(FTPHandler):
     def _start_spectatormode_stream(self, abs_path):
         if not abs_path.endswith('.slp'):
             return
-        if abs_path in spectatormode_live_files:
-            return
-        spectatormode_live_files[abs_path] = {'active': True}
-        def _run(path=abs_path, live_dict=spectatormode_live_files[abs_path]):
-            # Wait for file to exist and have nonzero size before starting streaming
-            waited = 0
-            while (not os.path.exists(path) or os.path.getsize(path) == 0) and waited < 60:
-                if not os.path.exists(path):
-                    time.sleep(0.1)
-                    waited += 0.1
-                    continue
-                # File exists but is empty, wait for data
-                time.sleep(0.1)
-                waited += 0.1
-            if not os.path.exists(path) or os.path.getsize(path) == 0:
-                live_dict['active'] = False
-                live_dict['error'] = 'File did not appear or remained empty for streaming.'
-                return
-            asyncio.run(tail_and_forward_spectatormode(path, WS_URL, live_dict))
-        t = threading.Thread(target=_run, daemon=True)
-        spectatormode_live_files[abs_path]['task'] = t
-        t.start()
+        base = os.path.basename(abs_path)
+        parts = base.rsplit('.', 2)
+        if len(parts) == 3 and parts[2] == 'slp' and parts[1]:
+            console_name = parts[1]
+        else:
+            console_name = 'unknown'
+        if console_name not in MonitoringFTPHandler.console_streams:
+            print(f"[DEBUG] Starting persistent SpectatorMode.tv thread for console {console_name}", flush=True)
+            file_queue = queue.Queue()
+            stop_event = threading.Event()
+            t = threading.Thread(target=self._spectatormode_persistent_stream, args=(console_name, file_queue, stop_event), daemon=True)
+            MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
+            t.start()
+        MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
+    def _spectatormode_persistent_stream(self, console_name, file_queue, stop_event):
+        ws_url = WS_URL
+        print(f"[SpectatorMode] Persistent thread started for console {console_name}", flush=True)
+        async def stream_loop():
+            ws = None
+            stream_id = None
+            last_forwarded_file = None
+            try:
+                ws = await websockets.connect(ws_url, max_size=None)
+                print(f"[SpectatorMode] Connected to {ws_url} for console {console_name}", flush=True)
+                greeting = await ws.recv()
+                print(f"[SpectatorMode] Server greeting: {greeting}", flush=True)
+                msg = json.loads(greeting)
+                if "stream_ids" not in msg or not msg["stream_ids"]:
+                    print("[SpectatorMode] Error: No stream_ids in server greeting.")
+                    return
+                stream_id = msg["stream_ids"][0]
+                print(f"[SpectatorMode] Using stream_id: {stream_id}", flush=True)
+                # stream_id in the shared console_streams dict for access by main thread
+                MonitoringFTPHandler.console_streams[console_name]['stream_id'] = stream_id
+                print(f"[SpectatorMode] Set MonitoringFTPHandler.console_streams['{console_name}']['stream_id'] = {stream_id}", flush=True)
+                while not stop_event.is_set():
+                    print(f"[SpectatorMode] Waiting for next file for console {console_name} (queue size: {file_queue.qsize()})", flush=True)
+                    try:
+                        slp_path = file_queue.get(timeout=1)
+                        print(f"[SpectatorMode] Got file from queue for {console_name}: {slp_path}", flush=True)
+                    except queue.Empty:
+                        continue
+                    if last_forwarded_file == slp_path:
+                        print(f"[SpectatorMode] Duplicate file detected in queue for {console_name}: {slp_path}, skipping.", flush=True)
+                        continue
+                    last_forwarded_file = slp_path
+                    print(f"[SpectatorMode] Detected new SLP file for {console_name}: {slp_path}", flush=True)
+                    # Wait for file to exist and have nonzero size before starting streaming
+                    waited = 0
+                    while (not os.path.exists(slp_path) or os.path.getsize(slp_path) == 0) and waited < 60 and not stop_event.is_set():
+                        if not os.path.exists(slp_path):
+                            print(f"[SpectatorMode] Waiting for file to exist: {slp_path}", flush=True)
+                            await asyncio.sleep(0.1)
+                            waited += 0.1
+                            continue
+                        print(f"[SpectatorMode] File exists but is empty: {slp_path}", flush=True)
+                        await asyncio.sleep(0.1)
+                        waited += 0.1
+                    if not os.path.exists(slp_path) or os.path.getsize(slp_path) == 0:
+                        print(f"[SpectatorMode] File did not appear or remained empty for streaming: {slp_path}", flush=True)
+                        continue
+                    try:
+                        raw_offset, _ = find_raw_offset_and_length(slp_path)
+                        print(f"[SpectatorMode] Forwarding file {slp_path} (raw_offset={raw_offset})", flush=True)
+                        with open(slp_path, "rb") as f:
+                            sent_packets = 0
+                            for offset, packet in slp_packet_iterator(f, raw_offset, None):
+                                # print(f"[SpectatorMode] Sending packet at offset {offset} (len={len(packet)}) for {slp_path}", flush=True)
+                                header = struct.pack('<II', stream_id, len(packet))
+                                if packet and packet[0] == 0x39:
+                                    print("[SpectatorMode] Game End (0x39) event encountered. Stopping forwarding.", flush=True)
+                                    await ws.send(header + packet)
+                                    break
+                                await ws.send(header + packet)
+                                sent_packets += 1
+                                await asyncio.sleep(0.001)
+                            print(f"[SpectatorMode] Finished forwarding {slp_path}, total packets sent: {sent_packets}", flush=True)
+                    except Exception as e:
+                        print(f"[SpectatorMode] Error forwarding {slp_path}: {e}", flush=True)
+            except Exception as e:
+                print(f"[SpectatorMode] Connection error for {console_name}: {e}", flush=True)
+            finally:
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                print(f"[SpectatorMode] WebSocket closed for console {console_name}", flush=True)
+        asyncio.run(stream_loop())
     active_connections = []
     active_transfers = []
     # Map of console_name -> {'thread': t, 'stop_event': e, 'queue': q}
@@ -723,9 +713,8 @@ def monitor_upload_directory():
                 # Check for files that are growing (active transfers)
                 for filename, info in current_files.items():
                     is_growing = filename in last_files and info['size'] > last_files[filename]['size']
-                    is_open = filename in open_files
-                    if is_growing or is_open:
-                        # File is growing or open - active transfer
+                    if is_growing:
+                        # File is growing - active transfer
                         for conn in MonitoringFTPHandler.active_connections:
                             if conn.get('current_file') and filename in conn['current_file']:
                                 conn['bytes_transferred'] = info['size']
@@ -909,11 +898,13 @@ if __name__ == "__main__":
                                     'timer': timer_str,
                                     'console_name': console_name
                                 }
-                                abs_fp = os.path.abspath(filepath)
-                                if abs_fp in spectatormode_live_files:
-                                    stream_id = spectatormode_live_files[abs_fp].get('stream_id')
-                                    if stream_id:
-                                        game_info['spectatormode_stream_id'] = stream_id
+                                console_stream_id = None
+                                if console_name:
+                                    streams = MonitoringFTPHandler.console_streams.get(console_name)
+                                    if streams and 'stream_id' in streams:
+                                        console_stream_id = streams['stream_id']
+                                if console_stream_id:
+                                    game_info['spectatormode_stream_id'] = console_stream_id
                             else:
                                 game = read_slippi(filepath, skip_frames=False)
 
