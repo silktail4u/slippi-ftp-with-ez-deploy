@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 import glob
 import json
+import requests
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
@@ -719,12 +720,7 @@ def monitor_upload_directory():
                             'size': stat.st_size,
                             'mtime': stat.st_mtime
                         }
-                # Get open files for this process
-                try:
-                    open_files = set(os.path.basename(f.path) for f in psutil.Process(pid).open_files())
-                except Exception:
-                    open_files = set()
-                # Check for files that are growing or open (active transfers)
+                # Check for files that are growing (active transfers)
                 for filename, info in current_files.items():
                     is_growing = filename in last_files and info['size'] > last_files[filename]['size']
                     is_open = filename in open_files
@@ -836,14 +832,6 @@ if __name__ == "__main__":
                 elif 'Downloading:' in current_file:
                     filename = current_file.replace('Downloading:', '').strip()
                     active_filepaths.add(os.path.abspath(filename))
-
-        # Also consider files open by this process as active (by absolute path)
-        try:
-            for f in psutil.Process(os.getpid()).open_files():
-                active_filepaths.add(os.path.abspath(f.path))
-        except Exception as e:
-            print(f"[DEBUG] Could not get open files: {e}")
-
         if os.path.exists(FTP_ROOT):
             for filename in os.listdir(FTP_ROOT):
                 filepath = os.path.join(FTP_ROOT, filename)
