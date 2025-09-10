@@ -19,6 +19,7 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 import urllib.parse
+from statx import statx
 
 app = Flask(__name__)
 
@@ -828,6 +829,7 @@ if __name__ == "__main__":
                     stat = os.stat(filepath)
                     size_mb = round(stat.st_size / (1024 * 1024), 2)
                     modified_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime))
+                    created_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(statx(filepath).btime))
                     is_active = os.path.abspath(filepath) in active_filepaths
                     cache_key = filename
                     cache_entry = gameinfo_cache.get(cache_key)
@@ -861,14 +863,18 @@ if __name__ == "__main__":
                                     char_name = CHARACTER_ID_MAP.get(char_id, f"char_{char_id}")
                                     port_key = 0 if p['port'] == min_port else 1
                                     stocks = None
+                                    percent = None
                                     # Use last_frame's port data if available
                                     try:
                                         if last_frame is not None and hasattr(last_frame, 'ports') and len(last_frame.ports) > port_key:
                                             port_data = last_frame.ports[port_key]
                                             if hasattr(port_data, 'leader') and 'post' in port_data.leader and 'stocks' in port_data.leader['post']:
                                                 stocks = port_data.leader['post']['stocks']
+                                            if hasattr(port_data, 'leader') and 'post' in port_data.leader and 'percent' in port_data.leader['post']:
+                                                percent = port_data.leader['post']['percent']
                                     except Exception:
                                         stocks = None
+                                        percent = None
                                     icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
                                     players.append({
                                         'port': p['port'],
@@ -876,12 +882,15 @@ if __name__ == "__main__":
                                         'character': char_name,
                                         'costume': costume,
                                         'stock_count': stocks,
+                                        'percent': percent,
                                         'icon': icon
                                     })
                                 # Timer string
                                 starting_timer_seconds = info.get('start', {}).get('timer', None)
                                 timer_str = "Unknown"
+                                frame_count = None
                                 if last_frame is not None and hasattr(last_frame, 'id'):
+                                    frame_count = last_frame.id
                                     timer_str = frame_to_game_timer(last_frame.id, starting_timer_seconds)
                                 # Console name
                                 console_name = info.get('metadata', {}).get('consoleNick')
@@ -929,6 +938,7 @@ if __name__ == "__main__":
                                         else:
                                             port_key = 1
                                         stocks = game.frames.ports[port_key].leader.post.stocks[-1].as_py()
+                                        percent = game.frames.ports[port_key].leader.post.percent[-1].as_py()
                                         icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
                                         players.append({
                                             'port': p.port,
@@ -936,14 +946,17 @@ if __name__ == "__main__":
                                             'character': char_name,
                                             'costume': costume,
                                             'stock_count': stocks,
+                                            'percent': percent,
                                             'icon': icon
                                         })
                                 # Calculate time remaining string
                                 timer_str = "Unknown"
+                                frame_count = None
                                 try:
                                     last_frame = game.frames.id[-1].as_py()
                                     starting_timer_seconds = game.start.timer
                                     if last_frame is not None:
+                                        frame_count = last_frame
                                         timer_str = frame_to_game_timer(last_frame, starting_timer_seconds)
                                 except Exception as e:
                                     timer_str = f"Error: {e}"
@@ -952,6 +965,7 @@ if __name__ == "__main__":
                                     'stage_name': stage_name,
                                     'players': players,
                                     'timer': timer_str,
+                                    'frame_count': frame_count,
                                     'console_name': game.metadata['consoleNick']
                                 }
                         except Exception as e:
@@ -970,6 +984,7 @@ if __name__ == "__main__":
                         'size_bytes': stat.st_size,
                         'size_mb': size_mb,
                         'modified_time': modified_time,
+                        'created_time': created_time,
                         'is_active_transfer': is_active,
                         'game_info': game_info
                     })
