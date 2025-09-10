@@ -742,6 +742,22 @@ def show_active_connections():
                     conn['last_logged_status'] = (status, current_file)
         
         time.sleep(5)  # Check less frequently
+        
+        
+def port_to_number(port):
+    # goofer goober method to convert "P1"->0, "P2"->1, or returns int if already a number
+    # live replays use "P1" etc for ports for some reason lol
+    if isinstance(port, int):
+        return port
+    if isinstance(port, str) and port.upper().startswith('P'):
+        try:
+            return int(port[1:]) - 1
+        except Exception:
+            pass
+    try:
+        return int(port)
+    except Exception:
+        return port  # fallback
 
 def main():
     # Check if port 21 is already in use
@@ -877,7 +893,7 @@ if __name__ == "__main__":
                                         percent = None
                                     icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
                                     players.append({
-                                        'port': p['port'],
+                                        'port': port_to_number(p['port']),
                                         'character_id': char_id,
                                         'character': char_name,
                                         'costume': costume,
@@ -941,7 +957,7 @@ if __name__ == "__main__":
                                         percent = game.frames.ports[port_key].leader.post.percent[-1].as_py()
                                         icon = f"/icon/chara_2_{char_name}_{str(costume).zfill(2)}.png"
                                         players.append({
-                                            'port': p.port,
+                                            'port': port_to_number(p.port),
                                             'character_id': char_id,
                                             'character': char_name,
                                             'costume': costume,
