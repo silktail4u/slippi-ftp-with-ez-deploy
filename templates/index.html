@@ -17,7 +17,7 @@
         }
 
         tr {
-            border: 1px solid black;
+            border: none;
         }
 
         table tr {
@@ -38,7 +38,7 @@
         td.game-info {
             /* padding-left: 1em; */
             font-size: 0.95em;
-            color: #444;
+            color: black;
             text-align: end;
         }
 
@@ -91,6 +91,31 @@
         }
         img {
             vertical-align: middle;
+        }
+        .set-header {
+            background: #cfc;
+            font-weight: bold;
+            font-size: 1.05em;
+            padding: 4px 8px;
+            width: 100%;
+            text-align: center;
+            border-top: 2px solid black;
+            border-left: 2px solid black;
+            border-right: 2px solid black;
+        }
+        .set-row {
+            border-left: 2px solid black;
+            border-right: 2px solid black;
+            border-top: none;
+            border-bottom: none;
+        }
+        .set-row.last-in-set {
+            border-bottom: 2px solid black;
+            margin-bottom: 10px;
+        }
+        .ignored > * {
+            font-style: italic;
+            opacity: 0.5;
         }
     </style>
 </head>
@@ -159,147 +184,197 @@
             tick();
         }
 
-        function generateReplayHtml(consoleName, replays, rowIdx, html) {
-            html += `<tbody><tr><td colspan='4' style='background:#eee;font-weight:bold;font-size:1.1em;width: 100%;'>Console: ${consoleName}</td></tr>`;
-            for (const replay of replays) {
-                const isActive = replay.is_active_transfer;
-                // Use filename as unique timer key
-                const timerKey = replay.filename.replace(/[^a-zA-Z0-9_\-]/g, '_');
-                // Stop timer if it exists and is no longer active
-                if (!isActive && timerTickers[timerKey]) {
-                    timerTickers[timerKey].stopped = true;
-                    delete timerTickers[timerKey];
-                }
-                const playUrl = isActive
-                    ? `slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1`
-                    : `slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}`;
-                // Format file size
-                let sizeStr;
-                if (replay.size_bytes < 1024) {
-                    sizeStr = replay.size_bytes + 'B';
-                } else if (replay.size_bytes < 1024 * 1024) {
-                    sizeStr = Math.round(replay.size_bytes / 1024 * 10) / 10 + 'k';
-                } else {
-                    sizeStr = Math.round(replay.size_bytes / (1024 * 1024) * 10) / 10 + 'M';
-                }
-                // Format date to match nginx style
-                const date = new Date(replay.modified_time);
-                const dateStr = date.toLocaleDateString('en-GB', {
-                    day: '2-digit',
-                    month: 'short',
-                    year: 'numeric'
-                }) + ' ' + date.toLocaleTimeString('en-GB', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false
-                });
-                // Game info (stage, players)
-                let gameInfoHtml = '';
-                let spectatormodeLink = '';
-                let slippiLauncherForkLink = '';
-                let slippiLauncherLink = '';
-                let slippiTvLink = '';
-                let slippilabLink = '';
-                if (replay.game_info && !replay.game_info.error) {
-                    const stage = replay.game_info.stage_name || '';
-                    const players = replay.game_info.players || [];
-                    // Character display name lookup
-                    const charDisplayNames = {
-                        'captain_falcon': 'Captain Falcon',
-                        'donkey_kong': 'Donkey Kong',
-                        'fox': 'Fox',
-                        'game_and_watch': 'Mr. Game & Watch',
-                        'kirby': 'Kirby',
-                        'bowser': 'Bowser',
-                        'link': 'Link',
-                        'luigi': 'Luigi',
-                        'mario': 'Mario',
-                        'marth': 'Marth',
-                        'mewtwo': 'Mewtwo',
-                        'ness': 'Ness',
-                        'peach': 'Peach',
-                        'pikachu': 'Pikachu',
-                        'ice_climbers': 'Ice Climbers',
-                        'jigglypuff': 'Jigglypuff',
-                        'samus': 'Samus',
-                        'yoshi': 'Yoshi',
-                        'zelda': 'Zelda',
-                        'sheik': 'Sheik',
-                        'falco': 'Falco',
-                        'young_link': 'Young Link',
-                        'dr_mario': 'Dr. Mario',
-                        'roy': 'Roy',
-                        'pichu': 'Pichu',
-                        'ganondorf': 'Ganondorf',
-                        'master_hand': 'Master Hand',
-                        'wireframe_male': 'Wireframe Male',
-                        'wireframe_female': 'Wireframe Female',
-                        'giga_bowser': 'Giga Bowser',
-                        'crazy_hand': 'Crazy Hand',
-                        'sandbag': 'Sandbag',
-                        'popo': 'Popo',
-                        'none': 'None'
-                    };
-                    let timerHtml = '';
-                    if (replay.game_info.timer && replay.game_info.timer !== 'Unknown') {
-                        timerHtml = `<div><b><span class='timer-value' id='timer-${timerKey}'>${replay.game_info.timer}</span></b></div>`;
-                        if (isActive) {
-                            setTimeout(() => startTimerTicker(timerKey, replay.game_info.timer), 0);
+        function generateReplayHtml(consoleName, clusters, rowIdx, html) {
+            html += `<tbody><tr><td colspan='2' style='background:#eee;font-weight:bold;font-size:1.1em;width: 100%;'>Console: ${consoleName}</td></tr>`;
+            for (const cluster of clusters) {
+                // Collect all unique characters (with icons) played by each player in the set
+                let playerChars = [[], []]; // [ [ {icon, name}... ], [ {icon, name}... ] ]
+                let seenChars = [new Set(), new Set()];
+                for (const replay of cluster.replays) {
+                    if (replay.game_info && replay.game_info.players && replay.game_info.players.length >= 2) {
+                        for (let p = 0; p < 2; ++p) {
+                            const char = replay.game_info.players[p].character;
+                            const icon = replay.game_info.players[p].icon;
+                            if (char && !seenChars[p].has(char)) {
+                                seenChars[p].add(char);
+                                playerChars[p].push({icon, name: char});
+                            }
                         }
                     }
-                    if (isActive) {
-                        slippiLauncherForkLink = `<div><a href="slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher (fork)</a></div>`;
-                    }
-                    if (isActive && replay.game_info.spectatormode_stream_id) {
-                        spectatormodeLink = `<div><a href="https://spectatormode.tv/?watch=${replay.game_info.spectatormode_stream_id}" target="_blank">Watch on spectatormode.tv</a></div>`;
-                    }
-                    if (isActive) {
-                        slippiTvLink = `<div><a href="slippi-tv://watch?code=${replay.game_info.console_name.toUpperCase()}" target="_blank">Watch with <img alt="SlippiTV" src="/assets/slippitv.png" width="18 height="18"> SlippiTV</a></div>`;
-                    }
-                    if (!isActive) {
-                        slippiLauncherLink = `<div><a href="slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher</a></div>`;
-                    }
-                    if (!isActive && replay.game_info.slippilab_link) {
-                        slippilabLink = `<div><a href="${replay.game_info.slippilab_link}" target="_blank">Watch on <img alt="Slippi Lab" src="/assets/slippilab.png" width="18" height="18"> Slippi Lab</a></div>`;
-                    }
-                    watchOptionsHtml = `${slippiLauncherForkLink}<br>${spectatormodeLink}<br>${slippiTvLink}<br>${slippiLauncherLink}<br>${slippilabLink}`;
-                    let consoleHtml = '';
-                    // Don't show console name in row, it's in the group header
-                    gameInfoHtml = `<div><b>${stage}</b></div>` + timerHtml + '<div>' +
-                        players.map(p => {
-                            let stocks = '';
-                            for (let i = 0; i < p.stock_count; ++i) {
-                                stocks += `<img class='stock-icon-img' src='${p.icon}' alt='${p.character}'>`;
-                            }
-                            if (stocks == 0) {
-                                stocks += `<img class='stock-icon-img perish' src='${p.icon}' alt='${p.character}'>`;
-                            }
-                            const displayName = charDisplayNames[p.character] || p.character.replace(/_/g, ' ');
-                            return `<span class='player-info'>${stocks} <span title='${p.character}'>${displayName}</span></span>`;
-                        }).join(' vs ') + '</div>';
-                } else if (replay.game_info && replay.game_info.error) {
-                    gameInfoHtml = `<div style='color:#a00;font-size:0.9em;'>${replay.game_info.error}</div>`;
                 }
-                html += `
-                    <tr>
-                        <td>
-                            <div class="file-info">
-                                <span class="last-modified">${dateStr}</span>
-                                <span class="file-size"><code>${sizeStr}</code></span>
-                                <span class="display-name">
-                                    ${isActive ? '<span style="color:#d00;font-size:1.2em;vertical-align:middle;">🔴</span> ' : ''}
-                                    <a href="https://sharlot.memes.nz/slp-files/${replay.filename}">${replay.filename}</a>
-                                    ${isActive ? ' <span style="color:#d00;font-weight:bold;">(live)</span>' : ''}
-                                </span>
-                                ${watchOptionsHtml}              
-                            </div>
-                        </td>
-                        <td class="game-info">
-                            ${gameInfoHtml}
-                        </td>
-                    </tr>
-                `;
-                rowIdx++;
+                // Score display: always larger number first, icons on correct side
+                const scoreA = cluster.score[0];
+                const scoreB = cluster.score[1];
+                // Helper to render all icons for a player
+                function renderIcons(arr) {
+                    return arr.map(pc => `<img class='stock-icon-img' src='${pc.icon}' alt='${pc.name}'>`).join(' ');
+                }
+                let leftIcons = renderIcons(playerChars[0]);
+                let rightIcons = renderIcons(playerChars[1]);
+                let scoreDisplay;
+                if (scoreA >= scoreB) {
+                    scoreDisplay = `${leftIcons} ${scoreA} - ${scoreB} ${rightIcons}`;
+                } else {
+                    scoreDisplay = `${rightIcons} ${scoreB} - ${scoreA} ${leftIcons}`;
+                }
+                html += `<tr><td colspan='2' class='set-header'>Score: ${scoreDisplay}</td></tr>`;
+                for (let i = 0; i < cluster.replays.length; ++i) {
+                    const replay = cluster.replays[i];
+                    const isLast = i === cluster.replays.length - 1;
+                    const isActive = replay.is_active_transfer;
+                    // Use filename as unique timer key
+                    const timerKey = replay.filename.replace(/[^a-zA-Z0-9_\-]/g, '_');
+                    // Stop timer if it exists and is no longer active
+                    if (!isActive && timerTickers[timerKey]) {
+                        timerTickers[timerKey].stopped = true;
+                        delete timerTickers[timerKey];
+                    }
+                    const playUrl = isActive
+                        ? `slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1`
+                        : `slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}`;
+                    // Format file size
+                    let sizeStr;
+                    if (replay.size_bytes < 1024) {
+                        sizeStr = replay.size_bytes + 'B';
+                    } else if (replay.size_bytes < 1024 * 1024) {
+                        sizeStr = Math.round(replay.size_bytes / 1024 * 10) / 10 + 'k';
+                    } else {
+                        sizeStr = Math.round(replay.size_bytes / (1024 * 1024) * 10) / 10 + 'M';
+                    }
+                    const date = new Date(replay.created_time);
+                    // Format date to match nginx style
+                    const dateStr = date.toLocaleDateString('en-GB', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric'
+                    }) + ' ' + date.toLocaleTimeString('en-GB', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    // Game info (stage, players)
+                    let gameInfoHtml = '';
+                    let spectatormodeLink = '';
+                    let slippiLauncherForkLink = '';
+                    let slippiLauncherLink = '';
+                    let slippiTvLink = '';
+                    let slippilabLink = '';
+                    // Determine if this game should be ignored for score
+                    let ignoreForScore = false;
+                    if (replay.game_info && replay.game_info.players && replay.game_info.players.length >= 2) {
+                        const p0 = replay.game_info.players[0];
+                        const p1 = replay.game_info.players[1];
+                        if (typeof p0.stock_count === 'number' && typeof p1.stock_count === 'number') {
+                            if (p0.stock_count > 1 && p1.stock_count > 1) {
+                                ignoreForScore = true;
+                            }
+                        }
+                    }
+                    if (replay.game_info && !replay.game_info.error) {
+                        const stage = replay.game_info.stage_name || '';
+                        const players = replay.game_info.players || [];
+                        // Character display name lookup
+                        const charDisplayNames = {
+                            'captain_falcon': 'Captain Falcon',
+                            'donkey_kong': 'Donkey Kong',
+                            'fox': 'Fox',
+                            'game_and_watch': 'Mr. Game & Watch',
+                            'kirby': 'Kirby',
+                            'bowser': 'Bowser',
+                            'link': 'Link',
+                            'luigi': 'Luigi',
+                            'mario': 'Mario',
+                            'marth': 'Marth',
+                            'mewtwo': 'Mewtwo',
+                            'ness': 'Ness',
+                            'peach': 'Peach',
+                            'pikachu': 'Pikachu',
+                            'ice_climbers': 'Ice Climbers',
+                            'jigglypuff': 'Jigglypuff',
+                            'samus': 'Samus',
+                            'yoshi': 'Yoshi',
+                            'zelda': 'Zelda',
+                            'sheik': 'Sheik',
+                            'falco': 'Falco',
+                            'young_link': 'Young Link',
+                            'dr_mario': 'Dr. Mario',
+                            'roy': 'Roy',
+                            'pichu': 'Pichu',
+                            'ganondorf': 'Ganondorf',
+                            'master_hand': 'Master Hand',
+                            'wireframe_male': 'Wireframe Male',
+                            'wireframe_female': 'Wireframe Female',
+                            'giga_bowser': 'Giga Bowser',
+                            'crazy_hand': 'Crazy Hand',
+                            'sandbag': 'Sandbag',
+                            'popo': 'Popo',
+                            'none': 'None'
+                        };
+                        let timerHtml = '';
+                        if (replay.game_info.timer && replay.game_info.timer !== 'Unknown') {
+                            timerHtml = `<div><b><span class='timer-value' id='timer-${timerKey}'>${replay.game_info.timer}</span></b></div>`;
+                            if (isActive) {
+                                setTimeout(() => startTimerTicker(timerKey, replay.game_info.timer), 0);
+                            }
+                        }
+                        if (isActive) {
+                            slippiLauncherForkLink = `<div><a href="slippi-mirror://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}&mirror=1" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher (fork)</a></div>`;
+                        }
+                        if (isActive && replay.game_info.spectatormode_stream_id) {
+                            spectatormodeLink = `<div><a href="https://spectatormode.tv/?watch=${replay.game_info.spectatormode_stream_id}" target="_blank">Watch on spectatormode.tv</a></div>`;
+                        }
+                        if (isActive) {
+                            slippiTvLink = `<div><a href="slippi-tv://watch?code=${replay.game_info.console_name.toUpperCase()}" target="_blank">Watch with <img alt="SlippiTV" src="/assets/slippitv.png" width="18" height="18"> SlippiTV</a></div>`;
+                        }
+                        if (!isActive) {
+                            slippiLauncherLink = `<div><a href="slippi://play?path=https://sharlot.memes.nz/slp-files/${replay.filename}" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher</a></div>`;
+                        }
+                        if (!isActive && replay.game_info.slippilab_link) {
+                            slippilabLink = `<div><a href="${replay.game_info.slippilab_link}" target="_blank">Watch on <img alt="Slippi Lab" src="/assets/slippilab.png" width="18" height="18"> Slippi Lab</a></div>`;
+                        }
+                        watchOptionsHtml = `${slippiLauncherForkLink}${spectatormodeLink}${slippiTvLink}${slippiLauncherLink}${slippilabLink}`;
+                        let consoleHtml = '';
+                        // Don't show console name in row, it's in the group header
+                        gameInfoHtml = `<div><b>${stage}</b></div>` + timerHtml + '<div>' +
+                            players.map(p => {
+                                let stocks = '';
+                                for (let i = 0; i < p.stock_count; ++i) {
+                                    stocks += `<img class='stock-icon-img' src='${p.icon}' alt='${p.character}'>`;
+                                }
+                                if (stocks == 0) {
+                                    stocks += `<img class='stock-icon-img perish' src='${p.icon}' alt='${p.character}'>`;
+                                }
+                                const displayName = charDisplayNames[p.character] || p.character.replace(/_/g, ' ');
+                                return `<span class='player-info'>${stocks} <span title='${p.character}'>${displayName}</span></span>`;
+                            }).join(' vs ') + '</div>';
+                    } else if (replay.game_info && replay.game_info.error) {
+                        gameInfoHtml = `<div style='color:#a00;font-size:0.9em;'>${replay.game_info.error}</div>`;
+                    }
+                    const rowBg = (rowIdx % 2 === 0) ? '#f2f2f2' : '#ffffff';
+                    let className = 'set-row';
+                    if (isLast) className += ' last-in-set';
+                    if (ignoreForScore) className += ' ignored';
+                    html += `
+                        <tr class="${className}" style="background:${rowBg}">
+                            <td>
+                                <div class="file-info">
+                                    <span class="last-modified">${dateStr}</span>
+                                    <span class="file-size"><code>${sizeStr}</code></span>
+                                    <span class="display-name">
+                                        ${isActive ? '<span style="color:#d00;font-size:1.2em;vertical-align:middle;">🔴</span> ' : ''}
+                                        <a href="https://sharlot.memes.nz/slp-files/${replay.filename}">${replay.filename}</a>
+                                        ${isActive ? ' <span style="color:#d00;font-weight:bold;">(live)</span>' : ''}
+                                    </span>
+                                    ${watchOptionsHtml}              
+                                </div>
+                            </td>
+                            <td class="game-info">
+                                ${gameInfoHtml}
+                            </td>
+                        </tr>
+                    `;
+                    rowIdx++;
+                }
             }
             html += `</tbody>`;
             return { html, rowIdx };
@@ -315,10 +390,10 @@
                     listEl.innerHTML = '<tr><td colspan="6">No files found</td></tr>';
                     return;
                 }
-                // Sort replays from newest to oldest by modified_time
+                // Sort replays from newest to oldest by created_time
                 const sortedReplays = data.replays.slice().sort((a, b) => {
-                    const dateA = new Date(a.modified_time);
-                    const dateB = new Date(b.modified_time);
+                    const dateA = new Date(a.created_time);
+                    const dateB = new Date(b.created_time);
                     return dateB - dateA;
                 });
 
@@ -335,17 +410,175 @@
                     grouped[consoleName].push(replay);
                 }
 
+                function clusterReplays(replays) {
+                    function getWinner(p0, p1) {
+                        if (typeof p0.stock_count === 'number' && typeof p1.stock_count === 'number') {
+                            if (p0.stock_count > p1.stock_count) return 0;
+                            if (p1.stock_count > p0.stock_count) return 1;
+                            // Tie: use lower percent as winner
+                            if (
+                                typeof p0.percent === 'number' &&
+                                typeof p1.percent === 'number'
+                            ) {
+                                if (p0.percent < p1.percent) return 0;
+                                if (p1.percent < p0.percent) return 1;
+                            }
+                        }
+                        return -1; // tie
+                    }
+                    // Work on a copy sorted oldest to newest
+                    const chronological = replays.slice().sort((a, b) => {
+                        const dateA = new Date(a.created_time);
+                        const dateB = new Date(b.created_time);
+                        return dateA - dateB;
+                    });
+                    const clusters = [];
+                    let currentCluster = null;
+                    let lastReplay = null;
+                    for (let i = 0; i < chronological.length; ++i) {
+                        const replay = chronological[i];
+                        let isNewSet = false;
+                        // Track score for split-on-3 logic
+                        let scoreA = currentCluster ? currentCluster.score[0] : 0;
+                        let scoreB = currentCluster ? currentCluster.score[1] : 0;
+                        if (!lastReplay) {
+                            isNewSet = true;
+                        } else {
+                            // Use game end time for set gap
+                            const lastStart = new Date(lastReplay.created_time).getTime();
+                            let lastDurationMs = 0;
+                            if (lastReplay.game_info && typeof lastReplay.game_info.frame_count === 'number') {
+                                lastDurationMs = (lastReplay.game_info.frame_count / 60) * 1000;
+                            }
+                            const lastEnd = lastStart + lastDurationMs;
+                            const thisStart = new Date(replay.created_time).getTime();
+                            const gapMs = thisStart - lastEnd;
+                            const hardGap = 3 * 60 * 1000; // 3 min
+                            const softGap = 1 * 60 * 1000; // 1 min
+                            const lastPlayers = (lastReplay.game_info && lastReplay.game_info.players) || [];
+                            const thisPlayers = (replay.game_info && replay.game_info.players) || [];
+                            // Always split if gap > hardGap
+                            if (gapMs > hardGap) {
+                                isNewSet = true;
+                            } else if (gapMs > softGap) {
+                                // If gap > softGap, split if any port/character/costume changes
+                                if (lastPlayers.length !== thisPlayers.length) {
+                                    isNewSet = true;
+                                } else {
+                                    let anyChange = false;
+                                    for (let j = 0; j < lastPlayers.length; ++j) {
+                                        if (lastPlayers[j].port !== thisPlayers[j].port ||
+                                            lastPlayers[j].character_id !== thisPlayers[j].character_id ||
+                                            lastPlayers[j].costume !== thisPlayers[j].costume) {
+                                            anyChange = true;
+                                            break;
+                                        }
+                                    }
+                                    if (anyChange) isNewSet = true;
+                                }
+                            } else {
+                                // If gap <= softGap, split only on port swap or both character/costume swap
+                                if (lastPlayers.length !== thisPlayers.length) {
+                                    isNewSet = true;
+                                } else {
+                                    // Ports swap
+                                    const lastPorts = lastPlayers.map(p => p.port).join(',');
+                                    const thisPorts = thisPlayers.map(p => p.port).join(',');
+                                    if (lastPorts !== thisPorts) {
+                                        isNewSet = true;
+                                    } else {
+                                        // Both characters/costumes swap
+                                        let allSwap = true;
+                                        for (let j = 0; j < lastPlayers.length; ++j) {
+                                            if (lastPlayers[j].character_id === thisPlayers[j].character_id && lastPlayers[j].costume === thisPlayers[j].costume) {
+                                                allSwap = false;
+                                                break;
+                                            }
+                                        }
+                                        if (allSwap) isNewSet = true;
+                                    }
+                                }
+                            }
+                        }
+                        // Score calculation: winner is player with more stocks (if available and both <=1)
+                        let ignoreForScore = false;
+                        if (replay.game_info && replay.game_info.players && replay.game_info.players.length >= 2) {
+                            const p0 = replay.game_info.players[0];
+                            const p1 = replay.game_info.players[1];
+                            if (typeof p0.stock_count === 'number' && typeof p1.stock_count === 'number') {
+                                if (p0.stock_count > 1 && p1.stock_count > 1) {
+                                    ignoreForScore = true;
+                                }
+                            }
+                        }
+                        // Update score for split-on-3 logic
+                        let nextScoreA = scoreA, nextScoreB = scoreB;
+                        if (
+                            currentCluster &&
+                            replay.game_info &&
+                            replay.game_info.players &&
+                            replay.game_info.players.length >= 2 &&
+                            !ignoreForScore
+                        ) {
+                            const p0 = replay.game_info.players[0];
+                            const p1 = replay.game_info.players[1];
+                            const winner = getWinner(p0, p1);
+                            if (winner === 0) nextScoreA++;
+                            else if (winner === 1) nextScoreB++;
+                        }
+                        // Split if either player reaches 3
+                        if (!isNewSet && (nextScoreA === 3 || nextScoreB === 3)) {
+                            isNewSet = true;
+                        }
+                        if (isNewSet) {
+                            if (currentCluster) clusters.push(currentCluster);
+                            currentCluster = { replays: [], score: [0, 0] };
+                            scoreA = 0;
+                            scoreB = 0;
+                            nextScoreA = 0;
+                            nextScoreB = 0;
+                        }
+                        // Actually update the score in the cluster
+                        if (currentCluster && replay.game_info && replay.game_info.players && replay.game_info.players.length >= 2 && !ignoreForScore) {
+                            const p0 = replay.game_info.players[0];
+                            const p1 = replay.game_info.players[1];
+                            const winner = getWinner(p0, p1);
+                            if (winner === 0) currentCluster.score[0]++;
+                            else if (winner === 1) currentCluster.score[1]++;
+                        }
+                        if (currentCluster) currentCluster.replays.push(replay);
+                        lastReplay = replay;
+                    }
+                    if (currentCluster) clusters.push(currentCluster);
+                    // Reverse clusters and each cluster's replays for newest-to-oldest display
+                    clusters.reverse();
+                    for (const cluster of clusters) {
+                        cluster.replays.reverse();
+                    }
+                    return clusters;
+                }
+
                 let rowIdx = 0;
                 let html = '';
-                for (const [consoleName, replays] of Object.entries(grouped)) {
-                    const { html: groupHtml, rowIdx: newRowIdx } = generateReplayHtml(consoleName, replays, rowIdx, html);
+                const sortedConsoleNames = Object.keys(grouped).sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
+                for (const consoleName of sortedConsoleNames) {
+                    const replays = grouped[consoleName];
+                    const clusters = clusterReplays(replays);
+                    const { html: groupHtml, rowIdx: newRowIdx } = generateReplayHtml(consoleName, clusters, rowIdx, html);
                     html = groupHtml;
                     rowIdx = newRowIdx;
                 }
                 listEl.innerHTML = html;
-                const { html: groupHtml, rowIdx: newRowIdx } = generateReplayHtml('Unknown Console', invalidConsoleGroup, 0, '');
-                html = groupHtml;
-                errorListEl.innerHTML = html;
+                // For Unknown Console, wrap replays in a single cluster if any
+                let errorHtml = '';
+                let errorRowIdx = 0;
+                if (invalidConsoleGroup.length > 0) {
+                    const errorClusters = [{ replays: invalidConsoleGroup, score: [0, 0] }];
+                    const result = generateReplayHtml('Unknown Console', errorClusters, errorRowIdx, '');
+                    errorHtml = result.html;
+                    errorRowIdx = result.rowIdx;
+                }
+                errorListEl.innerHTML = errorHtml;
             } catch (error) {
                 console.error('Failed to load replays:', error);
                 document.getElementById('fileList').innerHTML = '<tr><td colspan="6">Error loading files</td></tr>';
