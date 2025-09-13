@@ -1,5 +1,5 @@
 # Slippi-FTP
-![Imgur](https://i.imgur.com/yPFWcBO.png)
+![Landing Page](https://i.imgur.com/yPFWcBO.png)
 
 
 
