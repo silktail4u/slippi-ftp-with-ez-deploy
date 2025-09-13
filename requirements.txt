@@ -1,0 +1,8 @@
+psutil
+flask
+pyarrow
+websockets
+requests
+pyftpdlib
+pystatx
+git+https://github.com/sticks-stuff/peppi-py
