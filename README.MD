@@ -1,6 +1,6 @@
-# Slippi-FTP
+# sharlots-slippi-ftp-server
 
-Slippi-FTP is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with Slippi Nintendont, intended for use with this fork:
+sharlots-slippi-ftp-server is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with Slippi Nintendont, intended for use with this fork:
 https://github.com/sticks-stuff/Nintendont/releases
 
 ## Features
