@@ -31,14 +31,15 @@ ENV NAME=${NAME}
 ENV FSURL=${FSURL}
 
 RUN ls -la
-RUN printenv
-RUN envsubst '${NAME} ${FSURL}' <./templates/index.html.template> ./templates/index.html
+RUN sed -i 's|sharlots|${NAME}|g' ./templates/index.html;
+RUN sed -i 's|https://sharlot.memes.nz/slp-files|${FSURL}|g' ./templates/index.html;
+RUN mv ./templates/index.html ./templates/index.template
+RUN envsubst '${NAME} ${FSURL}' <./templates/index.template> ./templates/index.html;
 RUN if [ "$USEHTTPS" = "FALSE" ]; then sed -i 's|https://|http://|g' ./templates/index.html; fi
-
+RUN cat ./templates/index.html
 
 # Copy the application code
 COPY . .
-
 # Create FTP root directory
 RUN mkdir -p /web/sharlot/public_html/slp-files
 
@@ -46,3 +47,4 @@ RUN mkdir -p /web/sharlot/public_html/slp-files
 EXPOSE 21 9876
 # Start the FTP + Flask server as root
 CMD ["python", "sharlots-slippi-ftp-server.py"]
+
