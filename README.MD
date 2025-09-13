@@ -1,9 +1,14 @@
 # Slippi-FTP
 
-Slippi-FTP is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with slippi
+Slippi-FTP is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with Slippi Nintendont, intended for use with this fork:
+https://github.com/sticks-stuff/Nintendont/releases
 
-the following is for usage with this homebrew package:
-```https://github.com/sticks-stuff/Nintendont/releases```
+## Features
+
+- Watch live replays with Slippi.TV, Spectatormode.tv, or my fork of Slippi Launcher
+- Watch previous finished replays on Slippi Lab or with the Slippi Launcher
+- Sort replays into sets and show set score
+- Organize replays by console
 
 ## Installation
 
@@ -76,6 +81,3 @@ and change to
     app.run(host='0.0.0.0', port=9876, debug=True, use_reloader=False)
 ```
 if using docker you must call docker compose build again
-## License
-
-[MIT](https://choosealicense.com/licenses/mit/)
