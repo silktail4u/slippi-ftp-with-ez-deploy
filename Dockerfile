@@ -35,7 +35,7 @@ COPY . .
 
 RUN ls -la
 RUN sed -i 's|sharlots|${NAME}|g' ./templates/index.html;
-RUN sed -i 's|https://sharlot.memes.nz/slp-files|${FSURL}|g' ./templates/index.html;
+RUN sed -i 's|sharlot.memes.nz/slp-files|${FSURL}|g' ./templates/index.html;
 RUN mv ./templates/index.html ./templates/index.template
 RUN envsubst '${NAME} ${FSURL}' <./templates/index.template> ./templates/index.html;
 RUN if [ "$USEHTTPS" = "FALSE" ]; then sed -i 's|https://|http://|g' ./templates/index.html; fi
