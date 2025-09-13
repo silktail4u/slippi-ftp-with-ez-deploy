@@ -1,0 +1,359 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>$NAME Slippi FTP Server</title>
+    <style type="text/css">
+        i.icon {
+            display: block;
+            height: 16px;
+            width: 16px;
+        }
+
+        table {
+            border-collapse: collapse; 
+        }
+
+        tr {
+            border: 1px solid black;
+        }
+
+        table tr {
+            white-space: nowrap;
+        }
+
+        td.perms {}
+
+        td.file-size {
+            /* text-align: right; */
+            /* padding-left: 1em; */
+        }
+
+        td.display-name {
+            /* padding-left: 1em; */
+        }
+
+        td.game-info {
+            /* padding-left: 1em; */
+            font-size: 0.95em;
+            color: #444;
+            text-align: end;
+        }
+
+        .stock-icons {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .stock-icon-img {
+            height: 16px;
+            width: 16px;
+            vertical-align: middle;
+        }
+
+        .perish {
+            opacity: 0.5;
+        }
+
+        .player-info {
+            display: inline-block;
+        }
+
+        i.icon-_blank {
+            background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAWBJREFUeNqEUj1LxEAQnd1MVA4lyIEWx6UIKEGUExGsbC3tLfwJ/hT/g7VlCnubqxXBwg/Q4hQP/LhKL5nZuBsvuGfW5MGyuzM7jzdvVuR5DgYnZ+f99ai7Vt5t9K9unu4HLweI3qWYxI6PDosdy0fhcntxO44CcOBzPA7mfEyuHwf7ntQk4jcnywOxIlfxOCNYaLVgb6cXbkTdhJXq2SIlNMC0xIqhHczDbi8OVzpLSUa0WebRfmigLHqj1EcPZnwf7gbDIrYVRyEinurj6jTBHyI7pqVrFQqEbt6TEmZ9v1NRAJNC1xTYxIQh/MmRUlmFQE3qWOW1nqB2TWk1/3tgJV0waVvkFIEeZbHq4ElyKzAmEXOx6gnEVJuWBzmkRJBRPYGZBDsVaOlpSgVJE2yVaAe/0kx/3azBRO0VsbMFZE3CDSZKweZfYIVg+DZ6v7h9GDVOwZPw/PoxKu/fAgwALbDAXf7DdQkAAAAASUVORK5CYII=");
+        }
+
+        i.icon-_page {
+            background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAmhJREFUeNpsUztv01AYPfdhOy/XTZ80VV1VoCqlA2zQqUgwMEErWBALv4GJDfEDmOEHsFTqVCTExAiiSI2QEKJKESVFFBWo04TESRzfy2c7LY/kLtf2d8+555zvM9NaI1ora5svby9OnbUEBxgDlIKiWjXQeLy19/X17sEtcPY2rtHS96/Hu0RvXXLz+cUzM87zShsI29DpHCYt4E6Box4IZzTnbDx7V74GjhOSfwgE0H2638K9h08A3iHGVbjTw7g6YmAyw/BgecHNGGJjvfQhIfmfIFDAXJpjuugi7djIFVI4P0plctgJQ0xnFe5eOO02OwEp2VkhSCnC8WOCdqgwnzFx4/IyppwRVN+XYXsecqZA1pB48ekAnw9/4GZx3L04N/GoTwEjX4cNH5vlPfjtAIYp8cWrQutxrC5Mod3VsXVTMFSqtaE+gl9dhaUxE2tXZiF7nYiiatJ3v5s8R/1yOCNLOuwjkELiTbmC9dJHpIaGASsDkoFQGJQwHWMcHWJYOmUj1OjvQotuytt5nHMLEGkCyx6QU384jwkUAd2sxJbS/QShZtg/8rHzzQOzSaFhxQrA6YgQMQHojCUlgnCAAvKFBoXXaHfArSCZDE0gyWJgFIKmvUFKO4MUNIk2a4+hODtDUVuJ/J732AKS6ZtImdTyAQQB3bZN8l9t75IFh0JMUdVKsohsUPqRgnka0tYgggYpCHkKGTsHI5NOMojB4iTICCepvX53AIEfQta1iUCmoTiBmdEri2RgddKFhuJoqb/af/yw/d3zTNM6UkaOfis62aUgddAbnz+rXuPY+Vnzjt9/CzAAbmLjCrfBiRgAAAAASUVORK5CYII=");
+        }
+        #fileList {
+            display: flex;
+            max-width: 100vw;
+            justify-content: space-between;
+        }
+        tbody {
+            width: auto;
+            /* overflow: scroll; */
+            flex: 1;
+            padding: 0 20px 0 20px;
+        }
+        tr {
+            display: flex;
+            /* flex-direction: column; */
+            justify-content: space-between;
+        }
+        .file-info {
+            display: flex;
+            flex-direction: column;
+        }
+        img {
+            vertical-align: middle;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>$NAME Slippi FTP Server</h1>
+    <table id="fileList"></table>
+    <table id="errorFileList"></table>
+    <br>
+    <address id="footer">$NAME-slippi-ftp-server running @ 127.0.0.1:9876</address>
+    <script>
+        // --- Timer ticking logic ---
+        let timerTickers = {};
+        function parseTimerString(timerStr) {
+            // Expects mm:ss.SS
+            if (!timerStr || timerStr === 'Unknown') return null;
+            const match = timerStr.match(/(\d+):(\d+)\.(\d+)/);
+            if (!match) return null;
+            return {
+                minutes: parseInt(match[1], 10),
+                seconds: parseInt(match[2], 10),
+                centiseconds: parseInt(match[3], 10)
+            };
+        }
+        function timerToCentiseconds(timer) {
+            return timer.minutes * 60 * 100 + timer.seconds * 100 + timer.centiseconds;
+        }
+        function centisecondsToTimer(cs) {
+            let totalSeconds = Math.floor(cs / 100);
+            let minutes = Math.floor(totalSeconds / 60);
+            let seconds = totalSeconds % 60;
+            let centiseconds = cs % 100;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+        }
+        function startTimerTicker(timerKey, timerStr) {
+            if (!timerStr || timerStr === 'Unknown') return;
+            let timer = parseTimerString(timerStr);
+            if (!timer) return;
+            let cs = timerToCentiseconds(timer);
+            // If ticker exists, only reset if difference > 9 centiseconds
+            if (timerTickers[timerKey]) {
+                const diff = Math.abs(timerTickers[timerKey].cs - cs);
+                if (diff > 64) {
+                    timerTickers[timerKey].cs = cs;
+                    timerTickers[timerKey].reset = true;
+                }
+                timerTickers[timerKey].stopped = false;
+                return;
+            }
+            let ticker = { cs, reset: false, stopped: false };
+            timerTickers[timerKey] = ticker;
+            function tick() {
+                if (ticker.stopped) return;
+                if (ticker.reset) {
+                    ticker.reset = false;
+                    cs = ticker.cs;
+                }
+                if (cs > 0) {
+                    cs--;
+                    const el = document.querySelector(`#timer-${timerKey}`);
+                    if (el) el.textContent = centisecondsToTimer(cs);
+                    ticker.cs = cs;
+                }
+                setTimeout(tick, 1000/60);
+            }
+            tick();
+        }
+
+        function generateReplayHtml(consoleName, replays, rowIdx, html) {
+            html += `<tbody><tr><td colspan='4' style='background:#eee;font-weight:bold;font-size:1.1em;width: 100%;'>Console: ${consoleName}</td></tr>`;
+            for (const replay of replays) {
+                const isActive = replay.is_active_transfer;
+                // Use filename as unique timer key
+                const timerKey = replay.filename.replace(/[^a-zA-Z0-9_\-]/g, '_');
+                // Stop timer if it exists and is no longer active
+                if (!isActive && timerTickers[timerKey]) {
+                    timerTickers[timerKey].stopped = true;
+                    delete timerTickers[timerKey];
+                }
+                const playUrl = isActive
+                    ? `slippi-mirror://play?path=https://$FSURL/${replay.filename}&mirror=1`
+                    : `slippi://play?path=https://$FSURL/${replay.filename}`;
+                // Format file size
+                let sizeStr;
+                if (replay.size_bytes < 1024) {
+                    sizeStr = replay.size_bytes + 'B';
+                } else if (replay.size_bytes < 1024 * 1024) {
+                    sizeStr = Math.round(replay.size_bytes / 1024 * 10) / 10 + 'k';
+                } else {
+                    sizeStr = Math.round(replay.size_bytes / (1024 * 1024) * 10) / 10 + 'M';
+                }
+                // Format date to match nginx style
+                const date = new Date(replay.modified_time);
+                const dateStr = date.toLocaleDateString('en-GB', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric'
+                }) + ' ' + date.toLocaleTimeString('en-GB', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+                // Game info (stage, players)
+                let gameInfoHtml = '';
+                let spectatormodeLink = '';
+                let slippiLauncherForkLink = '';
+                let slippiLauncherLink = '';
+                let slippiTvLink = '';
+                let slippilabLink = '';
+                if (replay.game_info && !replay.game_info.error) {
+                    const stage = replay.game_info.stage_name || '';
+                    const players = replay.game_info.players || [];
+                    // Character display name lookup
+                    const charDisplayNames = {
+                        'captain_falcon': 'Captain Falcon',
+                        'donkey_kong': 'Donkey Kong',
+                        'fox': 'Fox',
+                        'game_and_watch': 'Mr. Game & Watch',
+                        'kirby': 'Kirby',
+                        'bowser': 'Bowser',
+                        'link': 'Link',
+                        'luigi': 'Luigi',
+                        'mario': 'Mario',
+                        'marth': 'Marth',
+                        'mewtwo': 'Mewtwo',
+                        'ness': 'Ness',
+                        'peach': 'Peach',
+                        'pikachu': 'Pikachu',
+                        'ice_climbers': 'Ice Climbers',
+                        'jigglypuff': 'Jigglypuff',
+                        'samus': 'Samus',
+                        'yoshi': 'Yoshi',
+                        'zelda': 'Zelda',
+                        'sheik': 'Sheik',
+                        'falco': 'Falco',
+                        'young_link': 'Young Link',
+                        'dr_mario': 'Dr. Mario',
+                        'roy': 'Roy',
+                        'pichu': 'Pichu',
+                        'ganondorf': 'Ganondorf',
+                        'master_hand': 'Master Hand',
+                        'wireframe_male': 'Wireframe Male',
+                        'wireframe_female': 'Wireframe Female',
+                        'giga_bowser': 'Giga Bowser',
+                        'crazy_hand': 'Crazy Hand',
+                        'sandbag': 'Sandbag',
+                        'popo': 'Popo',
+                        'none': 'None'
+                    };
+                    let timerHtml = '';
+                    if (replay.game_info.timer && replay.game_info.timer !== 'Unknown') {
+                        timerHtml = `<div><b><span class='timer-value' id='timer-${timerKey}'>${replay.game_info.timer}</span></b></div>`;
+                        if (isActive) {
+                            setTimeout(() => startTimerTicker(timerKey, replay.game_info.timer), 0);
+                        }
+                    }
+                    if (isActive) {
+                        slippiLauncherForkLink = `<div><a href="slippi-mirror://play?path=https://$FSURL/${replay.filename}&mirror=1" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher (fork)</a></div>`;
+                    }
+                    if (isActive && replay.game_info.spectatormode_stream_id) {
+                        spectatormodeLink = `<div><a href="https://spectatormode.tv/?watch=${replay.game_info.spectatormode_stream_id}" target="_blank">Watch on spectatormode.tv</a></div>`;
+                    }
+                    if (isActive) {
+                        slippiTvLink = `<div><a href="slippi-tv://watch?code=${replay.game_info.console_name.toUpperCase()}" target="_blank">Watch with <img alt="SlippiTV" src="/assets/slippitv.png" width="18 height="18"> SlippiTV</a></div>`;
+                    }
+                    if (!isActive) {
+                        slippiLauncherLink = `<div><a href="slippi://play?path=https://$FSURL/${replay.filename}" target="_blank">Watch with <img alt="Slippi Launcher" src="/assets/slippilauncher.png" width="18" height="18"> Slippi Launcher</a></div>`;
+                    }
+                    if (!isActive && replay.game_info.slippilab_link) {
+                        slippilabLink = `<div><a href="${replay.game_info.slippilab_link}" target="_blank">Watch on <img alt="Slippi Lab" src="/assets/slippilab.png" width="18" height="18"> Slippi Lab</a></div>`;
+                    }
+                    watchOptionsHtml = `${slippiLauncherForkLink}<br>${spectatormodeLink}<br>${slippiTvLink}<br>${slippiLauncherLink}<br>${slippilabLink}`;
+                    let consoleHtml = '';
+                    // Don't show console name in row, it's in the group header
+                    gameInfoHtml = `<div><b>${stage}</b></div>` + timerHtml + '<div>' +
+                        players.map(p => {
+                            let stocks = '';
+                            for (let i = 0; i < p.stock_count; ++i) {
+                                stocks += `<img class='stock-icon-img' src='${p.icon}' alt='${p.character}'>`;
+                            }
+                            if (stocks == 0) {
+                                stocks += `<img class='stock-icon-img perish' src='${p.icon}' alt='${p.character}'>`;
+                            }
+                            const displayName = charDisplayNames[p.character] || p.character.replace(/_/g, ' ');
+                            return `<span class='player-info'>${stocks} <span title='${p.character}'>${displayName}</span></span>`;
+                        }).join(' vs ') + '</div>';
+                } else if (replay.game_info && replay.game_info.error) {
+                    gameInfoHtml = `<div style='color:#a00;font-size:0.9em;'>${replay.game_info.error}</div>`;
+                }
+                html += `
+                    <tr>
+                        <td>
+                            <div class="file-info">
+                                <span class="last-modified">${dateStr}</span>
+                                <span class="file-size"><code>${sizeStr}</code></span>
+                                <span class="display-name">
+                                    ${isActive ? '<span style="color:#d00;font-size:1.2em;vertical-align:middle;">🔴</span> ' : ''}
+                                    <a href="https://$FSURL/${replay.filename}">${replay.filename}</a>
+                                    ${isActive ? ' <span style="color:#d00;font-weight:bold;">(live)</span>' : ''}
+                                </span>
+                                ${watchOptionsHtml}              
+                            </div>
+                        </td>
+                        <td class="game-info">
+                            ${gameInfoHtml}
+                        </td>
+                    </tr>
+                `;
+                rowIdx++;
+            }
+            html += `</tbody>`;
+            return { html, rowIdx };
+        }
+
+        async function loadReplays() {
+            try {
+                const response = await fetch('/api/replays');
+                const data = await response.json();
+                const listEl = document.getElementById('fileList');
+                const errorListEl = document.getElementById('errorFileList');
+                if (data.replays.length === 0) {
+                    listEl.innerHTML = '<tr><td colspan="6">No files found</td></tr>';
+                    return;
+                }
+                // Sort replays from newest to oldest by modified_time
+                const sortedReplays = data.replays.slice().sort((a, b) => {
+                    const dateA = new Date(a.modified_time);
+                    const dateB = new Date(b.modified_time);
+                    return dateB - dateA;
+                });
+
+                // Group replays by console
+                const grouped = {};
+                const invalidConsoleGroup = [];
+                for (const replay of sortedReplays) {
+                    let consoleName = (replay.game_info && replay.game_info.console_name) ? replay.game_info.console_name : 'Unknown Console';
+                    if (consoleName == 'Unknown Console') {
+                        invalidConsoleGroup.push(replay);
+                        continue;
+                    }
+                    if (!grouped[consoleName]) grouped[consoleName] = [];
+                    grouped[consoleName].push(replay);
+                }
+
+                let rowIdx = 0;
+                let html = '';
+                for (const [consoleName, replays] of Object.entries(grouped)) {
+                    const { html: groupHtml, rowIdx: newRowIdx } = generateReplayHtml(consoleName, replays, rowIdx, html);
+                    html = groupHtml;
+                    rowIdx = newRowIdx;
+                }
+                listEl.innerHTML = html;
+                const { html: groupHtml, rowIdx: newRowIdx } = generateReplayHtml('Unknown Console', invalidConsoleGroup, 0, '');
+                html = groupHtml;
+                errorListEl.innerHTML = html;
+            } catch (error) {
+                console.error('Failed to load replays:', error);
+                document.getElementById('fileList').innerHTML = '<tr><td colspan="6">Error loading files</td></tr>';
+            }
+        }
+        loadReplays();
+        setInterval(loadReplays, 1000);
+    </script>
+</body>
+
+</html>
