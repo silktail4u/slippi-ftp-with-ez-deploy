@@ -2,6 +2,9 @@
 
 Slippi-FTP is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with slippi
 
+the following is for usage with this homebrew package:
+```https://github.com/sticks-stuff/Nintendont/releases```
+
 ## Installation
 
 ### [Python](https://www.python.org/downloads)
