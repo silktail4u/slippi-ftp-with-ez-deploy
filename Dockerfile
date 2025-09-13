@@ -30,6 +30,9 @@ ENV USEHTTPS=${USEHTTPS}
 ENV NAME=${NAME}
 ENV FSURL=${FSURL}
 
+# Copy the application code
+COPY . .
+
 RUN ls -la
 RUN sed -i 's|sharlots|${NAME}|g' ./templates/index.html;
 RUN sed -i 's|https://sharlot.memes.nz/slp-files|${FSURL}|g' ./templates/index.html;
@@ -38,8 +41,6 @@ RUN envsubst '${NAME} ${FSURL}' <./templates/index.template> ./templates/index.h
 RUN if [ "$USEHTTPS" = "FALSE" ]; then sed -i 's|https://|http://|g' ./templates/index.html; fi
 RUN cat ./templates/index.html
 
-# Copy the application code
-COPY . .
 # Create FTP root directory
 RUN mkdir -p /web/sharlot/public_html/slp-files
 
