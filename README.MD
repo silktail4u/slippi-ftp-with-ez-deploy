@@ -1,4 +1,7 @@
 # Slippi-FTP
+![Imgur](https://i.imgur.com/yPFWcBO.png)
+
+
 
 Slippi-FTP is a full stack ftp server with a minimal front-end to allow for spectating and replay browsing with slippi
 
