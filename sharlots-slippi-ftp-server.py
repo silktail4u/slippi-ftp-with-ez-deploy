@@ -1,4 +1,5 @@
 import os
+import struct
 import time
 import threading
 import socket
@@ -57,7 +58,6 @@ def save_slippilab_uploaded():
 
 def fix_slp_header_length(file):
     # fix SLP header length if this is a .slp file since it will always be 0 for reasons
-    import struct
     try:
         with open(file, "rb+") as f:
             data = f.read()
@@ -268,11 +268,13 @@ class MonitoringFTPHandler(FTPHandler):
         else:
             console_name = 'unknown'
         if console_name not in MonitoringFTPHandler.console_streams:
+            MonitoringFTPHandler.console_streams[console_name] = {}
+        if 'spectatormode' not in MonitoringFTPHandler.console_streams[console_name]:
             print(f"[DEBUG] Starting persistent SpectatorMode.tv thread for console {console_name}", flush=True)
             file_queue = queue.Queue()
             stop_event = threading.Event()
             t = threading.Thread(target=self._spectatormode_persistent_stream, args=(console_name, file_queue, stop_event), daemon=True)
-            MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
+            MonitoringFTPHandler.console_streams[console_name]['spectatormode'] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
             t.start()
         MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
     def _spectatormode_persistent_stream(self, console_name, file_queue, stop_event):
@@ -294,8 +296,8 @@ class MonitoringFTPHandler(FTPHandler):
                 stream_id = msg["stream_ids"][0]
                 print(f"[SpectatorMode] Using stream_id: {stream_id}", flush=True)
                 # stream_id in the shared console_streams dict for access by main thread
-                MonitoringFTPHandler.console_streams[console_name]['stream_id'] = stream_id
-                print(f"[SpectatorMode] Set MonitoringFTPHandler.console_streams['{console_name}']['stream_id'] = {stream_id}", flush=True)
+                MonitoringFTPHandler.console_streams[console_name]['spectatormode']['stream_id'] = stream_id
+                print(f"[SpectatorMode] Set MonitoringFTPHandler.console_streams['{console_name}']['spectatormode']['stream_id'] = {stream_id}", flush=True)
                 while not stop_event.is_set():
                     print(f"[SpectatorMode] Waiting for next file for console {console_name} (queue size: {file_queue.qsize()})", flush=True)
                     try:
@@ -352,7 +354,7 @@ class MonitoringFTPHandler(FTPHandler):
         asyncio.run(stream_loop())
     active_connections = []
     active_transfers = []
-    # Map of console_name -> {'thread': t, 'stop_event': e, 'queue': q}
+    # Map of console_name -> {'spectatormode': {'thread': t, 'stop_event': e, 'queue': q}, 'slippitv': {'thread': t, 'stop_event': e, 'queue': q}}
     console_streams = {}
     
     def on_connect(self):
@@ -428,13 +430,15 @@ class MonitoringFTPHandler(FTPHandler):
                 console_name = 'unknown'
             import queue
             if console_name not in MonitoringFTPHandler.console_streams:
-                print(f"[DEBUG] Starting streaming thread for console {console_name}", flush=True)
+                MonitoringFTPHandler.console_streams[console_name] = {}
+            if 'slippitv' not in MonitoringFTPHandler.console_streams[console_name]:
+                print(f"[DEBUG] Starting SlippiTV streaming thread for console {console_name}", flush=True)
                 stop_event = threading.Event()
                 file_queue = queue.Queue()
-                t = threading.Thread(target=self._stream_slp_to_websocket_per_console, args=(console_name, file_queue, stop_event), daemon=True)
-                MonitoringFTPHandler.console_streams[console_name] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
+                t = threading.Thread(target=self._stream_slp_to_slippitv_per_console, args=(console_name, file_queue, stop_event), daemon=True)
+                MonitoringFTPHandler.console_streams[console_name]['slippitv'] = {'thread': t, 'stop_event': stop_event, 'queue': file_queue}
                 t.start()
-            MonitoringFTPHandler.console_streams[console_name]['queue'].put(abs_path)
+            MonitoringFTPHandler.console_streams[console_name]['slippitv']['queue'].put(abs_path)
         return super().ftp_STOR(line)
     
     def ftp_RETR(self, line):
@@ -472,9 +476,9 @@ class MonitoringFTPHandler(FTPHandler):
             self.connection_info['current_file'] = f"Incomplete receive: {os.path.basename(file)}"
             self.connection_info['transfer_active'] = False
 
-    def _stream_slp_to_websocket_per_console(self, console_name, file_queue, stop_event):
+    def _stream_slp_to_slippitv_per_console(self, console_name, file_queue, stop_event):
         ws_url = f"wss://slippi-tv.azurewebsites.net:443/stream/{console_name.upper()}"
-        print(f"[DEBUG] Streaming thread started for console {console_name}", flush=True)
+        print(f"[SLIPPITV] Streaming thread started for console {console_name}", flush=True)
 
         def is_transfer_active(filepath):
             abs_path = os.path.abspath(filepath)
@@ -488,15 +492,15 @@ class MonitoringFTPHandler(FTPHandler):
             while not stop_event.is_set():
                 ws = None
                 try:
-                    print(f"[WS] Connecting to {ws_url} for console {console_name}", flush=True)
+                    print(f"[SLIPPITV] Connecting to {ws_url} for console {console_name}", flush=True)
                     ws = await websockets.connect(ws_url, max_size=None)
-                    print(f"[WS] Connected to {ws_url}", flush=True)
+                    print(f"[SLIPPITV] Connected to {ws_url}", flush=True)
                     while not stop_event.is_set():
                         try:
                             filepath = file_queue.get(timeout=1)
                         except queue.Empty:
                             continue
-                        print(f"[WS] Streaming file {filepath} on console {console_name}", flush=True)
+                        print(f"[SLIPPITV] Streaming file {filepath} on console {console_name}", flush=True)
                         last_pos = 0
                         # Wait for file to exist
                         waited = 0
@@ -514,28 +518,28 @@ class MonitoringFTPHandler(FTPHandler):
                                     chunk = f.read(4096)
                                     if chunk:
                                         await ws.send(chunk)
-                                        print(f"[WS] Sent {len(chunk)} bytes at offset {last_pos} for {filepath}", flush=True)
+                                        print(f"[SLIPPITV] Sent {len(chunk)} bytes at offset {last_pos} for {filepath}", flush=True)
                                         last_pos += len(chunk)
                                     else:
                                         if not is_transfer_active(filepath):
-                                            print(f"[WS] Finished streaming file {filepath} (FTP transfer ended)", flush=True)
+                                            print(f"[SLIPPITV] Finished streaming file {filepath} (FTP transfer ended)", flush=True)
                                             break
                                         await asyncio.sleep(0.2)
                         except FileNotFoundError:
-                            print(f"[WS] File not found: {filepath}", flush=True)
+                            print(f"[SLIPPITV] File not found: {filepath}", flush=True)
                         except Exception as e:
-                            print(f"[WS] Error reading/sending file {filepath}: {e}", flush=True)
+                            print(f"[SLIPPITV] Error reading/sending file {filepath}: {e}", flush=True)
                 except websockets.ConnectionClosed as e:
-                    print(f"[WS] Connection closed: code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)}", flush=True)
+                    print(f"[SLIPPITV] Connection closed: code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)}", flush=True)
                 except Exception as e:
-                    print(f"[WS] Error in persistent stream for {console_name}: {e}\n{traceback.format_exc()}", flush=True)
+                    print(f"[SLIPPITV] Error in persistent stream for {console_name}: {e}\n{traceback.format_exc()}", flush=True)
                 finally:
                     if ws is not None:
                         try:
                             await ws.close()
-                            print(f"[WS] WebSocket closed for console {console_name}", flush=True)
+                            print(f"[SLIPPITV] WebSocket closed for console {console_name}", flush=True)
                         except Exception as e:
-                            print(f"[WS] Error closing WebSocket for {console_name}: {e}", flush=True)
+                            print(f"[SLIPPITV] Error closing WebSocket for {console_name}: {e}", flush=True)
                 if not stop_event.is_set():
                     await asyncio.sleep(2)
 
