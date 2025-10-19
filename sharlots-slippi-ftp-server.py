@@ -35,7 +35,7 @@ spectatormode_live_files = {}
 
 SLIPPILAB_UPLOADS_FILE = "slippilab_uploaded.json"
 slippilab_uploaded = {}  # {abs_path: slippilab_id}
-
+active_matchups = [] # [{p1tag,p2tag,console}]
 def load_slippilab_uploaded():
     global slippilab_uploaded
     if os.path.exists(SLIPPILAB_UPLOADS_FILE):
@@ -644,12 +644,10 @@ def get_socket_info():
         # Try to get connections, but handle permission errors gracefully
         connections = psutil.net_connections(kind='tcp')
         ftp_connections = []
-        
         for conn in connections:
             # Skip if no local address
             if not conn.laddr:
                 continue
-                
             # FTP control connections (port 21)
             if conn.laddr.port == 21:
                 ftp_connections.append({
@@ -674,7 +672,6 @@ def get_socket_info():
                         'pid': getattr(conn, 'pid', 'N/A'),
                         'type': 'DATA'
                     })
-        
         return ftp_connections
     except psutil.AccessDenied as e:
         return [{'error': f'Permission denied - run with sudo for full socket info (pid={e.pid})'}]
@@ -727,7 +724,6 @@ def monitor_upload_directory():
                 last_files = current_files.copy()
         except Exception as e:
             pass  # Ignore errors
-            
         time.sleep(1)  # Check every second
 
 def show_active_connections():
@@ -744,10 +740,7 @@ def show_active_connections():
                 if not hasattr(conn, 'last_logged_status') or conn.get('last_logged_status') != (status, current_file):
                     print(f"[{time.strftime('%H:%M:%S')}] {conn['ip']} - {status} - {current_file}")
                     conn['last_logged_status'] = (status, current_file)
-        
-        time.sleep(5)  # Check less frequently
-        
-        
+        time.sleep(5)  # Check less frequently 
 def port_to_number(port):
     # goofer goober method to convert "P1"->0, "P2"->1, or returns int if already a number
     # live replays use "P1" etc for ports for some reason lol
@@ -822,7 +815,20 @@ if __name__ == "__main__":
     @app.route('/')
     def index():
         return render_template('index.html')
-
+    @app.route('/reader/scan/')
+    def check_in(p1,p2,wiiname):
+        matchup = {'p1':p1,'p2':p2,'wiiname':wiiname}
+        reportcheck = active_matchups.count(matchup)>0 #&replaymanagercheck 
+        active_matchups.append(matchup)
+        return reportcheck
+    @app.route('/reader/sync/')
+    def get_syncing_wii_name():
+        replays = json.loads(api_replays())
+        for replay in replays:
+            if replay['game_info']['players'][0]['character'] == CHARACTER_ID_MAP['bowser'] & replay['game_info']['players'][1]['character'] == CHARACTER_ID_MAP['pichu'] & replay['game_info']['players'][1]['stock_count'] == 6 & replay['game_info']['players'][0]['stock_count'] == 6:
+                return replay['game_info']['console_name']
+        return "kamihouse"
+        #test
     @app.route('/api/replays')
     def api_replays():
         replays = []
