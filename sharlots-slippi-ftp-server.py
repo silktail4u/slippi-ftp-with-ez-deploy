@@ -4,6 +4,7 @@ import time
 import threading
 import socket
 import psutil
+import datetime
 from flask import Flask, render_template, render_template_string, jsonify, send_from_directory
 from peppi_py import read_slippi, live_slippi_frame_numbers, live_slippi_info
 import pyarrow as pa
@@ -411,7 +412,11 @@ class MonitoringFTPHandler(FTPHandler):
             if replay_id:
                 slippilab_uploaded[abs_path] = replay_id
                 save_slippilab_uploaded()
-    
+        replays = json.loads(api_replays())
+        for matchup in active_matchups:
+            #maintain active_matchups
+            #report on match completion 
+
     # New methods to detect transfer start
     def ftp_STOR(self, line):
         if hasattr(self, 'connection_info'):
@@ -815,13 +820,20 @@ if __name__ == "__main__":
     @app.route('/')
     def index():
         return render_template('index.html')
-    @app.route('/reader/scan/')
+    @app.route('/reader/hearbeat')
+    def heartbeat(p1,p2,wiiname):
+        for game in active_matchups:
+            if game['wiiname'] == wiiname
+                return True
+        return False
+    @app.route('/reader/scan')
     def check_in(p1,p2,wiiname):
-        matchup = {'p1':p1,'p2':p2,'wiiname':wiiname}
-        reportcheck = active_matchups.count(matchup)>0 #&replaymanagercheck 
-        active_matchups.append(matchup)
+        matchup = {'p1':p1,'p2':p2,'wiiname':wiiname,'start_time':datetime.datetime.now(),'p1wins':0,'p2wins':0,'setlen':2}##todo get setlen from replaymanager integration
+        matchActiveOrUneeded= heartbeat(p1,p2,wiiname) #&replaymanagercheck 
+        if not matchActiveOrUneeded:
+            active_matchups.append(matchup)
         return reportcheck
-    @app.route('/reader/sync/')
+    @app.route('/reader/sync')
     def get_syncing_wii_name():
         replays = json.loads(api_replays())
         for replay in replays:
