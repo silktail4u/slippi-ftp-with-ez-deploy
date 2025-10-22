@@ -73,18 +73,6 @@ def open_replay_manager(active_matchup_entry,paths, fallback_app_path=None):
             print("No fallback application path provided.")
             sys.exit(1)
 
-
-# 🔧 EXAMPLE USAGE:
-#replay_files = [
-#    "/path/to/replay1.rep",
-#    "/path/to/replay2.rep"
-#]
-
-# Optional: provide a fallback path to the Electron app if protocol isn't registered
-#fallback_electron_app_path = "/path/to/replay-manager"  # e.g., packaged binary
-
-#open_replay_manager(replay_files, fallback_app_path=fallback_electron_app_path)
-
 app = Flask(__name__)
 
 # Configuration
@@ -893,8 +881,13 @@ if __name__ == "__main__":
     @app.route('/reader/scan')
     def check_in(p1,p2,wiiname):
         matchup = {'p1':p1,'p2':p2,'wiiname':wiiname,'start_time':datetime.datetime.now(),'p1wins':0,'p2wins':0,'setlen':2}##todo get setlen from replaymanager integration
-        matchActiveOrUneeded= heartbeat(p1,p2,wiiname) #&replaymanagercheck 
-        if not matchActiveOrUneeded:
+        url = "http://localhost:3005/singlescheck/?event='"+startgg_event+"'&players='"+p1+"'&players='"+p2
+        replaymancheck
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            replaymancheck = json.loads(response).pending
+        matchActiveOrUneeded = heartbeat(p1,p2,wiiname)
+        if not matchActiveOrUneeded and replaymancheck: 
             active_matchups.append(matchup)
         return reportcheck
     @app.route('/reader/sync')
