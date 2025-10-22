@@ -22,6 +22,68 @@ from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 import urllib.parse
 from statx import statx
+import sys
+import subprocess
+import urllib.parse
+import platform
+
+def open_replay_manager(active_matchup_entry,paths, fallback_app_path=None):
+    # URL-encode individual paths
+    encoded_paths = [urllib.parse.quote(path) for path in paths]
+    i = 0
+    matchObjects = []
+    for path in encoded_paths:
+        matchObject.url = path
+        matchObject.p1Id = active_matchup_entry.p1Id
+        matchObject.p2Id = active_matchup_entry.p2Id
+        matchObject.p1Score = active_matchup_entry.games[i].p1Stocks
+        matchObject.p2Score = active_matchup_entry.games[i].p2Stocks
+        matchObject.event = startgg_event
+        matchObjects.push(jsonify(matchObject))
+        i+=1
+    url = f"replay-manager://report-singles?matches={';'.join(matchObjects)}"
+
+    system = platform.system()
+
+    try:
+        if system == "Windows":
+            os.startfile(url)
+
+        elif system == "Darwin":  # macOS
+            subprocess.run(["open", url], check=True)
+
+        elif system == "Linux":
+            try:
+                subprocess.run(["xdg-open", url], check=True)
+            except FileNotFoundError:
+                raise RuntimeError("xdg-open not available")
+        else:
+            raise RuntimeError(f"Unsupported platform: {system}")
+
+    except Exception as e:
+        print(f"System handler failed: {e}")
+        if fallback_app_path:
+            # Fall back to running the app directly with the URL as an argument
+            try:
+                subprocess.run([fallback_app_path, url], check=True)
+            except Exception as fallback_error:
+                print(f"Fallback launch failed: {fallback_error}")
+                sys.exit(1)
+        else:
+            print("No fallback application path provided.")
+            sys.exit(1)
+
+
+# 🔧 EXAMPLE USAGE:
+#replay_files = [
+#    "/path/to/replay1.rep",
+#    "/path/to/replay2.rep"
+#]
+
+# Optional: provide a fallback path to the Electron app if protocol isn't registered
+#fallback_electron_app_path = "/path/to/replay-manager"  # e.g., packaged binary
+
+#open_replay_manager(replay_files, fallback_app_path=fallback_electron_app_path)
 
 app = Flask(__name__)
 
@@ -36,7 +98,8 @@ spectatormode_live_files = {}
 
 SLIPPILAB_UPLOADS_FILE = "slippilab_uploaded.json"
 slippilab_uploaded = {}  # {abs_path: slippilab_id}
-active_matchups = [] # [{p1tag,p2tag,console}]
+startgg_event = '$startgg_event_id'
+active_matchups = [] # [{p1id,p2id,console,games(eg: [{p1Stocks,p2Stocks,winnerid}])}]
 def load_slippilab_uploaded():
     global slippilab_uploaded
     if os.path.exists(SLIPPILAB_UPLOADS_FILE):
@@ -89,7 +152,8 @@ def fix_slp_header_length(file):
         print(f"[ERROR] Failed to fix SLP header length for {file}: {e}", flush=True)
     return False
 
-def upload_to_slippilab(filepath):
+def 
+upload_to_slippilab(filepath):
     # fix SLP header length before uploading
     if filepath.lower().endswith('.slp'):
         result = fix_slp_header_length(filepath)
